@@ -18,6 +18,7 @@ import (
 	"github.com/spxrogers/agentsync/internal/secrets"
 	"github.com/spxrogers/agentsync/internal/source"
 	"github.com/spxrogers/agentsync/internal/testenv"
+	"github.com/spxrogers/agentsync/internal/untrusted"
 )
 
 func TestMain(m *testing.M) {
@@ -258,21 +259,22 @@ func TestHookCaptureRefusesLossAndLeavesOtherFiles(t *testing.T) {
 		name, value string
 		refused     bool
 	}{
-		{"timeout", `[{"hooks":[{"type":"command","command":"check","timeout":10}]}]`, true},
+		{"statusMessage", `[{"hooks":[{"type":"command","command":"check","statusMessage":"starting"}]}]`, true},
 		{"http", `[{"hooks":[{"type":"http","url":"https://example.test"}]}]`, true},
 		{"definition-extra", `[{"hooks":[],"timeout":10}]`, true},
-		{"unmodeled-before-missing-command", `[{"hooks":[{"timeout":10}]}]`, true},
+		{"unmodeled-before-missing-command", `[{"hooks":[{"statusMessage":"starting"}]}]`, true},
 		{"missing-command", `[{"hooks":[{"type":"command"}]}]`, false},
 		{"malformed-command", `[{"hooks":[{"type":"command","command":42}]}]`, false},
 		{"malformed-type", `[{"hooks":[{"type":42,"command":"check"}]}]`, false},
 		{"malformed-handler", `[{"hooks":[42]}]`, false},
 		{"malformed-matcher", `[{"matcher":42,"hooks":[]}]`, false},
+		{"malformed-timeout", `[{"hooks":[{"type":"command","command":"check","timeout":"fast"}]}]`, false},
 		{"missing-handlers", `[{}]`, false},
 		{"malformed-handlers", `[{"hooks":42}]`, false},
 		{"malformed-definition", `[42]`, false},
 		{"malformed-event", `42`, false},
-		{"structural-before-semantic", `[42,{"hooks":[{"timeout":10}]}]`, false},
-		{"semantic-before-structural", `[{"hooks":[{"timeout":10}]},42]`, true},
+		{"structural-before-semantic", `[42,{"hooks":[{"statusMessage":"starting"}]}]`, false},
+		{"semantic-before-structural", `[{"hooks":[{"statusMessage":"starting"}]},42]`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -533,5 +535,46 @@ func TestGrokValidateHome_RefusalIsUniform(t *testing.T) {
 		if roots := a.VersionRoots(adapter.ScopeUser, ""); roots != nil {
 			t.Errorf("VersionRoots(GROK_HOME=%q) = %v; want nil", bad, roots)
 		}
+	}
+}
+
+func TestHookTimeoutRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	a := grok.New(grok.Options{TargetRoot: root})
+	in := source.Canonical{
+		Hooks: []source.Hook{
+			{Event: untrusted.Wrap("PreToolUse"), Matcher: "Bash", Type: "command", Command: "echo hi", Timeout: 25},
+		},
+	}
+	ops, _, err := a.Render(secrets.ForRender(in), adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Apply(ops, adapter.PassThroughWriter{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify on-disk format
+	path := filepath.Join(root, ".grok", "hooks", "agentsync.json")
+	data := readFile(t, path)
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	handler := parsed["hooks"].(map[string]any)["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if handler["timeout"] != float64(25) {
+		t.Fatalf("expected timeout 25, got %v (%T)", handler["timeout"], handler["timeout"])
+	}
+
+	// Ingest back
+	got, err := a.Ingest(adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hooks) != 1 {
+		t.Fatalf("expected 1 hook ingested, got %d", len(got.Hooks))
+	}
+	if got.Hooks[0].Timeout != 25 {
+		t.Fatalf("expected timeout 25, got %d", got.Hooks[0].Timeout)
 	}
 }

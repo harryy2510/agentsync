@@ -853,7 +853,7 @@ serialized, each classified non-secret in `walkerCovered`).
 **Hooks are filtered per HANDLER, not per event.** A canonical
 `hooks/<event>.toml` holds many handlers from many sources, so refusing a whole
 event because a plugin contributed one would silently drop the user's own. The
-join key is a content signature (event + matcher + type + command), which is what
+join key is a content signature (event + matcher + type + command + timeout), which is what
 lets import match a plugin's projected handler against the agent's native ingest —
 the ingest carries no provenance at all. Reconcile resolves hooks to no owner by
 construction: key-level write-back is implemented for MCP servers only and

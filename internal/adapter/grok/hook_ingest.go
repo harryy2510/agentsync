@@ -12,7 +12,7 @@ import (
 
 var (
 	hookDefModeledKeys   = map[string]bool{"matcher": true, "hooks": true}
-	hookEntryModeledKeys = map[string]bool{"type": true, "command": true}
+	hookEntryModeledKeys = map[string]bool{"type": true, "command": true, "timeout": true}
 )
 
 // ingestHooks captures only whole events representable by source.Hook. Native
@@ -105,11 +105,19 @@ func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) 
 					structural = true
 					break defs
 				}
+				timeout, tok, timeoutStructural := adapter.ParseHookTimeout(h)
+				if !tok {
+					fmt.Fprintf(warn, "warning: hook event %q has a handler whose \"timeout\" is not an integer; event not captured\n", event)
+					representable = false
+					structural = timeoutStructural
+					break defs
+				}
 				captured = append(captured, source.Hook{
 					Event:   untrusted.Wrap(event), // native hooks JSON map key
 					Matcher: matcher,
 					Type:    asStr(h["type"]),
 					Command: asStr(h["command"]),
+					Timeout: timeout,
 				})
 			}
 		}

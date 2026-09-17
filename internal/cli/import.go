@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1254,7 +1255,7 @@ func pluginProvided(fs afero.Fs, agentsyncHome, projectRoot string, sc adapter.S
 // collision is impossible rather than merely unlikely.
 func hookSignature(h source.Hook) string {
 	var b strings.Builder
-	for _, part := range []string{h.Event.Unverified(), h.Matcher, h.Type, h.Command} {
+	for _, part := range []string{h.Event.Unverified(), h.Matcher, h.Type, h.Command, strconv.Itoa(h.Timeout)} {
 		fmt.Fprintf(&b, "%d:%s", len(part), part)
 	}
 	return b.String()

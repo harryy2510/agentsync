@@ -43,12 +43,14 @@ func (a *Adapter) renderHooks(c source.Canonical, p Paths) ([]adapter.FileOp, []
 			})
 			continue
 		}
+		handler := map[string]any{
+			"type":    h.Type,
+			"command": h.Command,
+		}
+		adapter.SetHookTimeout(handler, h.Timeout)
 		entry := map[string]any{
 			"matcher": h.Matcher,
-			"hooks": []map[string]any{{
-				"type":    h.Type,
-				"command": h.Command,
-			}},
+			"hooks":   []map[string]any{handler},
 		}
 		// event is a machine map key / owned-key stem — raw, not the sanitizing String().
 		event := h.Event.Unverified()
@@ -84,7 +86,7 @@ func (a *Adapter) renderHooks(c source.Canonical, p Paths) ([]adapter.FileOp, []
 // event unrepresentable — see ingestHooks.
 var (
 	claudeHookDefModeledKeys   = map[string]bool{"matcher": true, "hooks": true}
-	claudeHookEntryModeledKeys = map[string]bool{"type": true, "command": true}
+	claudeHookEntryModeledKeys = map[string]bool{"type": true, "command": true, "timeout": true}
 )
 
 // ingestHooks decodes settings.json's `hooks` object into canonical hooks,
@@ -220,11 +222,19 @@ func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) 
 					structural = true
 					break defs
 				}
+				timeout, tok, timeoutStructural := adapter.ParseHookTimeout(h)
+				if !tok {
+					fmt.Fprintf(warn, "warning: hook event %q has a handler whose \"timeout\" is not an integer; event not captured\n", event)
+					representable = false
+					structural = timeoutStructural
+					break defs
+				}
 				captured = append(captured, source.Hook{
 					Event:   untrusted.Wrap(event), // native settings.json map key
 					Matcher: matcher,
 					Type:    asStr(h["type"]),
 					Command: asStr(h["command"]),
+					Timeout: timeout,
 				})
 			}
 		}

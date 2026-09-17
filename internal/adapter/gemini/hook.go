@@ -125,6 +125,7 @@ func (a *Adapter) renderHooks(c source.Canonical, p Paths) ([]adapter.FileOp, []
 		if h.Type != "" {
 			handler["type"] = h.Type
 		}
+		adapter.SetHookTimeout(handler, h.Timeout)
 		// Coalesce with the previous group iff this Hook shares its (event,
 		// matcher) — reconstructing the native multi-handler group (one group, an
 		// N-element `hooks` array) rather than exploding into N single-handler
@@ -169,7 +170,7 @@ func (a *Adapter) renderHooks(c source.Canonical, p Paths) ([]adapter.FileOp, []
 // an event makes that event unrepresentable — see ingestHooks.
 var (
 	geminiHookDefModeledKeys   = map[string]bool{"matcher": true, "hooks": true}
-	geminiHookEntryModeledKeys = map[string]bool{"type": true, "command": true}
+	geminiHookEntryModeledKeys = map[string]bool{"type": true, "command": true, "timeout": true}
 )
 
 // ingestHooks decodes settings.json's `hooks` object into canonical hooks,
@@ -300,11 +301,19 @@ func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) 
 					structural = true
 					break defs
 				}
+				timeout, tok, timeoutStructural := adapter.ParseHookTimeout(h)
+				if !tok {
+					fmt.Fprintf(warn, "warning: hook event %q has a handler whose \"timeout\" is not an integer; event not captured\n", geminiEvent)
+					representable = false
+					structural = timeoutStructural
+					break defs
+				}
 				captured = append(captured, source.Hook{
 					Event:   untrusted.Wrap(canonEvent), // remapped from native config
 					Matcher: matcher,
 					Type:    asStr(h["type"]),
 					Command: asStr(h["command"]),
+					Timeout: timeout,
 				})
 			}
 		}

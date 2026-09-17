@@ -11,6 +11,11 @@ source layout, CLI surface, and state schema are stabilizing but may still chang
 
 ### Added
 
+- **Model hook timeout across adapters** (`Hook.Timeout`), supporting timeout duration
+  in seconds for command hook handlers across Claude Code, Codex CLI, Cursor, Gemini
+  CLI, and Grok Build. Fixes TOML integer serialization in Codex `MergeTOML` to prevent
+  `json.Number` values from rendering as strings, pins round-trip persistence in canonical
+  source, and includes timeout in import hook signatures.
 - **Dedicated Grok Build adapter** (`agentsync agent add grok`) with user/project
   instructions, complete skill directories, legacy Markdown commands, TOML MCP,
   and JSON command hooks. Includes detection, `GROK_HOME`, import/reconcile,

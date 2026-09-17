@@ -26,12 +26,16 @@ func TestRefusedHookEvents_StructuralVsSemantic(t *testing.T) {
 		wantRefused bool
 	}{
 		{
+			"modeled: timeout with command is representable",
+			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": 30 } ] } ] }`, false,
+		},
+		{
 			"semantic: unmodeled def field",
 			`{ "BeforeTool": [ { "matcher": "Bash", "sequential": true, "hooks": [ { "type": "command", "command": "x" } ] } ] }`, true,
 		},
 		{
 			"semantic: unmodeled handler field",
-			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": 30 } ] } ] }`, true,
+			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "name": "my-handler" } ] } ] }`, true,
 		},
 		{
 			"semantic: non-command handler",
@@ -43,15 +47,23 @@ func TestRefusedHookEvents_StructuralVsSemantic(t *testing.T) {
 		},
 		{
 			"semantic: unmodeled handler field without a command (unmodeled wins over the absent-command structural check)",
-			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "timeout": 30 } ] } ] }`, true,
+			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "name": "my-handler" } ] } ] }`, true,
 		},
 		{
 			"semantic: unmodeled handler field with a non-string command (unmodeled wins over the non-string-command structural check)",
-			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": 123, "timeout": 30 } ] } ] }`, true,
+			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": 123, "name": "my-handler" } ] } ] }`, true,
 		},
 		{
 			"semantic: typeless converted engine shape (unmodeled field, no type, no command)",
 			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "prompt": "do it" } ] } ] }`, true,
+		},
+		{
+			"structural: modeled timeout without a command",
+			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "timeout": 30 } ] } ] }`, false,
+		},
+		{
+			"structural: non-integer timeout",
+			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": "fast" } ] } ] }`, false,
 		},
 		{
 			"structural: event value not an array",
@@ -87,7 +99,7 @@ func TestRefusedHookEvents_StructuralVsSemantic(t *testing.T) {
 		},
 		{
 			"gemini-only event is never refused, even on semantic content",
-			`{ "BeforeModel": [ { "matcher": "x", "hooks": [ { "type": "command", "command": "x", "timeout": 30 } ] } ] }`, false,
+			`{ "BeforeModel": [ { "matcher": "x", "hooks": [ { "type": "command", "command": "x", "name": "my-handler" } ] } ] }`, false,
 		},
 	}
 	for _, tt := range tests {
@@ -143,6 +155,10 @@ func TestIngest_RefusesMalformedEntryShapes(t *testing.T) {
 		{
 			"absent command",
 			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command" } ] } ] }`,
+		},
+		{
+			"non-integer timeout",
+			`{ "BeforeTool": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": "fast" } ] } ] }`,
 		},
 	}
 	for _, tt := range tests {

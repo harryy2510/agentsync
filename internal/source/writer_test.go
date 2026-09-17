@@ -192,3 +192,46 @@ func TestWriteMarketplace_RoundTrip(t *testing.T) {
 		t.Errorf("url = %q", got.Marketplace.URL)
 	}
 }
+
+func TestWriteHooks_RoundTripPinsTimeout(t *testing.T) {
+	home := t.TempDir()
+
+	hooks := []source.Hook{
+		{
+			Matcher: "Bash",
+			Type:    "command",
+			Command: "echo fast",
+			Timeout: 10,
+		},
+		{
+			Matcher: "Write|Edit",
+			Type:    "command",
+			Command: "echo slow",
+			Timeout: 60,
+		},
+	}
+	if err := source.WriteHooks(home, "PreToolUse", hooks); err != nil {
+		t.Fatalf("WriteHooks: %v", err)
+	}
+
+	dest := filepath.Join(home, "hooks", "PreToolUse.toml")
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	fs := afero.NewOsFs()
+	loaded, err := source.Load(fs, home)
+	if err != nil {
+		t.Fatalf("source.Load: %v\ncontent:\n%s", err, data)
+	}
+	if len(loaded.Hooks) != 2 {
+		t.Fatalf("expected 2 hooks, got %d", len(loaded.Hooks))
+	}
+	if loaded.Hooks[0].Timeout != 10 || loaded.Hooks[0].Command != "echo fast" {
+		t.Errorf("hook 0 timeout corrupted: %+v", loaded.Hooks[0])
+	}
+	if loaded.Hooks[1].Timeout != 60 || loaded.Hooks[1].Command != "echo slow" {
+		t.Errorf("hook 1 timeout corrupted: %+v", loaded.Hooks[1])
+	}
+}

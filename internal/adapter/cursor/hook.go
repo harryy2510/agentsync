@@ -96,6 +96,7 @@ func (a *Adapter) renderHooks(c source.Canonical, p Paths) ([]adapter.FileOp, []
 		if h.Matcher != "" {
 			entry["matcher"] = h.Matcher
 		}
+		adapter.SetHookTimeout(entry, h.Timeout)
 		byEvent[ce] = append(byEvent[ce], entry)
 	}
 	if len(byEvent) == 0 {
@@ -132,7 +133,7 @@ func (a *Adapter) renderHooks(c source.Canonical, p Paths) ([]adapter.FileOp, []
 // rewrite the user's native entry without those fields. ingestHooks therefore
 // refuses to capture the ENTIRE event when any of its entries is unrepresentable,
 // so apply never takes ownership of an array it would lossily rewrite.
-var cursorHookEntryModeledKeys = map[string]bool{"command": true, "matcher": true, "type": true}
+var cursorHookEntryModeledKeys = map[string]bool{"command": true, "matcher": true, "type": true, "timeout": true}
 
 // ingestHooks decodes `.cursor/hooks.json`'s `hooks` object (the value of the
 // top-level "hooks" key) into canonical hooks, warning on anything it cannot
@@ -234,11 +235,19 @@ func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) 
 				structural = true
 				break
 			}
+			timeout, tok, timeoutStructural := adapter.ParseHookTimeout(entry)
+			if !tok {
+				fmt.Fprintf(warn, "warning: hook event %q has an entry whose \"timeout\" is not an integer; event not captured\n", cursorEvent)
+				representable = false
+				structural = timeoutStructural
+				break
+			}
 			captured = append(captured, source.Hook{
 				Event:   untrusted.Wrap(canonEvent), // remapped from native config
 				Matcher: asStr(entry["matcher"]),
 				Type:    typ,
 				Command: asStr(entry["command"]),
+				Timeout: timeout,
 			})
 		}
 		if representable {

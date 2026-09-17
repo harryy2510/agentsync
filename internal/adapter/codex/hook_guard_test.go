@@ -47,13 +47,23 @@ command = "x"
 `, true,
 		},
 		{
-			"semantic: unmodeled handler field",
+			"modeled: timeout with command is representable",
 			`[[hooks.PreToolUse]]
 matcher = "Bash"
 [[hooks.PreToolUse.hooks]]
 type = "command"
 command = "x"
 timeout = 30
+`, false,
+		},
+		{
+			"semantic: unmodeled handler field",
+			`[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "x"
+statusMessage = "starting"
 `, true,
 		},
 		{
@@ -72,8 +82,17 @@ matcher = "Bash"
 [[hooks.PreToolUse.hooks]]
 type = "command"
 command = 123
-timeout = 30
+statusMessage = "starting"
 `, true,
+		},
+		{
+			"structural: modeled timeout without a command",
+			`[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+timeout = 30
+`, false,
 		},
 		{
 			"codex divergence: non-command type with a command is representable — never refused",

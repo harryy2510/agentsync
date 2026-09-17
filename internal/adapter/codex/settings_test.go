@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -131,5 +132,58 @@ func TestMergeTOML_EmptyExisting(t *testing.T) {
 	servers := got["mcp_servers"].(map[string]any)
 	if servers["github"] == nil {
 		t.Fatalf("github server missing: %v", got)
+	}
+}
+
+// TestMergeTOML_PreservesNumericTypesFromJSONNumbers guards against the
+// BLOCKER 1 bug where go-toml rendered json.Number as a string, corrupting
+// hook timeouts and MCP extras into values Codex rejects.
+func TestMergeTOML_PreservesNumericTypesFromJSONNumbers(t *testing.T) {
+	ours := map[string]any{
+		"mcp_servers": map[string]any{
+			"github": map[string]any{
+				"command":             "npx",
+				"startup_timeout_sec": json.Number("10"),
+			},
+		},
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "Bash",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": "echo hi",
+							"timeout": json.Number("30"),
+						},
+					},
+				},
+			},
+		},
+	}
+	out, err := codex.MergeTOML(nil, ours, nil)
+	if err != nil {
+		t.Fatalf("MergeTOML: %v", err)
+	}
+	outStr := string(out)
+	if strings.Contains(outStr, "'30'") || strings.Contains(outStr, `"30"`) {
+		t.Fatalf("timeout was rendered as string in TOML: %s", outStr)
+	}
+	if strings.Contains(outStr, "'10'") || strings.Contains(outStr, `"10"`) {
+		t.Fatalf("startup_timeout_sec was rendered as string in TOML: %s", outStr)
+	}
+	// Verify it unmarshals with integer values:
+	var parsed map[string]any
+	if err := toml.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	mcp := parsed["mcp_servers"].(map[string]any)["github"].(map[string]any)
+	if mcp["startup_timeout_sec"] != int64(10) {
+		t.Fatalf("startup_timeout_sec type mismatch: %#v (%T)", mcp["startup_timeout_sec"], mcp["startup_timeout_sec"])
+	}
+	hooksTable := parsed["hooks"].(map[string]any)["PreToolUse"].([]any)[0].(map[string]any)
+	handler := hooksTable["hooks"].([]any)[0].(map[string]any)
+	if handler["timeout"] != int64(30) {
+		t.Fatalf("hook timeout type mismatch: %#v (%T)", handler["timeout"], handler["timeout"])
 	}
 }
