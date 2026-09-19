@@ -13,9 +13,9 @@ internal/
 ├── secrets/          # ${secret:}/${env:} resolve · re-reference · mask
 ├── project/          # .agentsync/ tree overlay discovery + merge
 ├── adapter/          # the per-agent Adapter interface + registry
-│   ├── claude/ opencode/ codex/       # 9 deep adapters (agent-specific,
+│   ├── claude/ opencode/ codex/       # 10 deep adapters (agent-specific,
 │   ├── cursor/ gemini/ continuedev/   # often bidirectional; claude is
-│   ├── windsurf/ roo/ cline/          # the reference implementation)
+│   ├── grok/ windsurf/ roo/ cline/          # the reference implementation)
 │   ├── generic/                       # data-driven breadth tier (22 agents, specs.go)
 │   └── noop/                          # placeholder for unimplemented agents
 ├── render/           # the apply pipeline: plan · write · report
@@ -200,7 +200,7 @@ directories the apply tail should git-back-up for local rollback — an adapter
 implements `VersionRoots(scope, project)` to return its config dir plus any
 shared cross-agent dir it writes into, and MUST return nil at project scope (see
 [architecture § VersionedDirs](architecture.md#versioneddirs-optional)).
-- **Key:** `Adapter` (interface); `DestWriter` (interface);
+- **Key:** `Adapter` (interface); `PathKeyMerger`, `MergeStrategyForPath`; `DestWriter` (interface);
   `VersionedDirs` (optional interface, `VersionRoots`); `NonEmptyDirs` (helper);
   `MCPSpecIngester` (optional interface, READ-ONLY — `IngestMCPSpec(raw
   map[string]any) source.MCPServerSpec`: the native→canonical inverse for ONE
@@ -226,7 +226,7 @@ shared cross-agent dir it writes into, and MUST return nil at project scope (see
   agree on (a pure filter over the canonical; it asks no ingester anything). They
   live beside the interface because there is no Render-side counterpart to ask
   the same question of.
-- **Files:** `adapter.go`, `registry.go`, `nativeplugins.go`.
+- **Files:** `adapter.go`, `registry.go`, `nativeplugins.go`, `merge_strategy.go`.
 
 ### `internal/adapter/claude`
 The reference adapter — MCP, memory, skills, subagents, commands, and hooks, with per-key merge
@@ -307,6 +307,18 @@ trigger retirement.
 - **Files:** `codex.go`, `homedir.go`, `render.go`, `mcp.go`, `ingest.go`, `ingest_plugins.go`,
   `apply.go`, `paths.go`, `skill.go`, `command.go`, `subagent.go`, `hook.go`,
   `memory.go`, `settings.go`.
+
+### `internal/adapter/grok`
+The dedicated Grok Build adapter: user/project instructions, complete skills,
+legacy Markdown commands, TOML MCP, and JSON command hooks. Uses
+`codex.MergeTOML`, `jsonkeys.ConvertNumbers`, `claude.SkillFileOps`, and
+a Grok-local hook parser; no canonical schema changes. Implements
+`PathKeyMerger` for mixed-format cleanup, `HookIngestGuard` for enriched-event
+retirement, `WarnEmitter`, and `VersionedDirs`. See [Grok support](grok.md).
+- **Key:** `New(Options) *Adapter`; the `Adapter` + `MCPSpecIngester` methods;
+  `IngestMCPSpec`.
+- **Files:** `grok.go`, `paths.go`, `render.go`, `mcp.go`, `hook.go`, `hook_ingest.go`, `ingest.go`,
+  `apply.go`.
 
 ### `internal/adapter/cursor`
 The Cursor adapter — MCP, memory, skills, subagents, slash commands, and hooks.
