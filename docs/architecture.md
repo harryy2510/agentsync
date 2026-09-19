@@ -610,11 +610,30 @@ reports directories to back up. The contract every implementor honours:
    `~/.claude/skills`. The apply tail **unions** these across every enabled adapter,
    **de-nests** them (drops a root nested under another — never a repo inside a
    repo), and **de-dups** them (a shared dir is one repo, checkpointed once).
+   "Nested" is decided by the *lexical* `paths.ContainsDir` — the declared
+   spelling, no symlink resolution — because git backup inits, opens and stages
+   by the declared path and `agit.Detect` walks that spelling's ancestors: a
+   child root that is a symlink out of its parent folds into the parent like a
+   real subdirectory (a separate repo at the link's target would never be
+   opened, and would make the parent un-revertable through the nested-repo
+   probe). Only the never-at-`$HOME` guard below compares directory *identity*
+   (`paths.ContainsDirResolved`).
 3. **Paths are absolute, after `AGENTSYNC_TARGET_ROOT` redirection** — they match
    the `FileOp.Path` values the adapter emits, so tests redirect `$HOME` uniformly.
 4. **`$HOME`-level strays are excluded.** A deep agent may also write a top-level
    file outside any returned dir (Claude's `~/.claude.json`); those are
    intentionally **not** versioned — agentsync never inits a repo at `$HOME`.
+   The apply tail enforces that invariant centrally: a declared root that *is*
+   `$HOME` or an ancestor of it — by identity (`paths.ContainsDirResolved`:
+   symlinks resolved through the deepest *existing* ancestor, case folded on
+   macOS/Windows) *or* by spelling (`paths.ContainsDir`, so `/home` is refused
+   even when `$HOME=/home/alice` is itself a symlink to `/data/alice`) — is
+   dropped from the
+   union with a warning, before de-nesting could fold every other root into it
+   (`enabledVersionRoots` / `partitionVersionRoots`,
+   `TestEnabledVersionRoots_NeverAtOrAboveHome`). No hardcoded adapter root can
+   trip it; an env-derived one (Grok's `GROK_HOME`) can, and the adapter refuses
+   the two obvious values (`/`, `$HOME`) with an error before it gets this far.
 
 An adapter with no versionable directory (e.g. `noop`) does not implement it. The
 apply tail's use of these roots is the step-9 narrative in §4.
@@ -1093,7 +1112,27 @@ All present in v1.0 (`internal/iox`, `internal/render`, `internal/state`):
    `apply`/`reconcile`. `apply --dry-run` is read-only and takes no lock.
 3. **`AGENTSYNC_TARGET_ROOT`** — every dest path resolves through one helper
    (`internal/paths`), so tests redirect `$HOME` to a tmpdir. A `forbidigo` rule
-   bans `os.UserHomeDir()` in `_test.go`.
+   bans `os.UserHomeDir()` in `_test.go`. The redirect is a *sandbox*: while it
+   is set, the canonical source resolves to `<root>/.agentsync` and the
+   user-facing overrides (`AGENTSYNC_HOME`, Grok's `GROK_HOME`) are ignored —
+   otherwise an override exported on a machine that actually uses agentsync
+   would outrank the redirect and every test resolving the canonical source
+   would land on the developer's real tree (issue #270). Third-party agent home
+   variables are read only through `paths.AgentHomeOverride`, never a raw
+   `os.Getenv` (`TestAgentHomeVarsReadOnlyThroughPaths` scans the sources). The
+   test harness (`internal/testenv`) additionally scrubs every ambient
+   `AGENTSYNC_*` override plus `GROK_HOME`/`NO_COLOR`/`EDITOR` from the process
+   at package init — before any TestMain or `t.Setenv` — simply by being
+   imported (`ScrubAmbient`; `TestScrubRunsAtInit` re-executes the test binary
+   to pin the wiring), and CI runs the suite once pristine and once with those
+   variables exported (`just test-release-configured`;
+   `TestConfiguredEnvLegCoversAmbientVars` keeps the three lists in step).
+   `internal/cli`'s TestMain also runs under a throwaway `HOME` and fails the
+   package if any test wrote there instead of into its redirect. `PATH` cannot
+   be scrubbed, so a test whose outcome depends on an agent binary being absent
+   neutralizes it itself (`"PATH": t.TempDir()`), and the configured container
+   leg puts a stub for every probed agent binary on `PATH`
+   (`TestConfiguredLegFakesEveryAgentBinary` keeps that list complete).
 4. **First-apply backups** — the `foreign-collision` case copies the pre-existing
    destination into `.state/backups/<ts>/` before writing. Symlinked
    destinations are refused by default — and, on the read path, classified as

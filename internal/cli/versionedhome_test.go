@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/spxrogers/agentsync/internal/adapter"
+	"github.com/spxrogers/agentsync/internal/paths"
 )
 
 // TestVersionedDirsContract pins the git-backup capability in code so it can't
@@ -33,10 +34,10 @@ func TestVersionedDirsContract(t *testing.T) {
 				t.Errorf("%s.VersionRoots(user) = %q; want absolute", name, d)
 			}
 			// Path-BOUNDARY check, not a byte prefix: a sibling like `<root>-evil`
-			// starts with the root string but is not under it. isUnderDir uses
+			// starts with the root string but is not under it. paths.ContainsDir uses
 			// filepath.Rel and rejects such escapes (the exact bug class this guard
 			// exists to catch). See TestVersionedDirsContract_RejectsSibling.
-			if !isUnderDir(d, root) {
+			if !paths.ContainsDir(root, d) {
 				t.Errorf("%s.VersionRoots(user) = %q; want under target root %q", name, d, root)
 			}
 			if d == root {
@@ -64,7 +65,7 @@ func (f fakeVersionedDirs) VersionRoots(adapter.Scope, string) []string { return
 // TestVersionedDirsContract_RejectsSibling proves the contract's boundary check
 // catches the prefix-bug class: a returned root whose STRING starts with the
 // target root but is a sibling directory (e.g. `<root>-evil/x`) is not under it.
-// The old strings.HasPrefix check would have accepted it; isUnderDir rejects it.
+// The old strings.HasPrefix check would have accepted it; paths.ContainsDir rejects it.
 func TestVersionedDirsContract_RejectsSibling(t *testing.T) {
 	root := t.TempDir()
 	sibling := filepath.Join(root+"-evil", "x")
@@ -75,7 +76,7 @@ func TestVersionedDirsContract_RejectsSibling(t *testing.T) {
 			t.Fatalf("fixture bug: %q should share the byte prefix %q", d, root)
 		}
 		// ...yet the boundary check must reject it as not-under-root.
-		if isUnderDir(d, root) {
+		if paths.ContainsDir(root, d) {
 			t.Fatalf("boundary check accepted sibling %q as under %q — the prefix-bug class is not caught", d, root)
 		}
 	}
@@ -90,7 +91,7 @@ func TestEnabledVersionRoots_DedupAndDenest(t *testing.T) {
 	reg := registryFactory()
 
 	// codex + warp both write to ~/.agents/skills → it must appear exactly once.
-	roots := enabledVersionRoots(reg, []string{"codex", "warp"}, adapter.ScopeUser, "")
+	roots := enabledVersionRoots(reg, []string{"codex", "warp"}, adapter.ScopeUser, "", root)
 	agentsSkills := filepath.Join(root, ".agents", "skills")
 	if n := countEq(roots, agentsSkills); n != 1 {
 		t.Errorf("shared %s appears %d times across codex+warp roots, want 1: %v", agentsSkills, n, roots)
@@ -98,7 +99,7 @@ func TestEnabledVersionRoots_DedupAndDenest(t *testing.T) {
 
 	// claude + opencode: opencode declares ~/.claude/skills, nested under claude's
 	// ~/.claude → de-nested away (claude's repo captures it).
-	roots = enabledVersionRoots(reg, []string{"claude", "opencode"}, adapter.ScopeUser, "")
+	roots = enabledVersionRoots(reg, []string{"claude", "opencode"}, adapter.ScopeUser, "", root)
 	claudeSkills := filepath.Join(root, ".claude", "skills")
 	if contains(roots, claudeSkills) {
 		t.Errorf("~/.claude/skills should be de-nested under ~/.claude, but appears in %v", roots)
@@ -109,7 +110,7 @@ func TestEnabledVersionRoots_DedupAndDenest(t *testing.T) {
 	// No root may be nested under another.
 	for i := range roots {
 		for j := range roots {
-			if i != j && isUnderDir(roots[i], roots[j]) {
+			if i != j && paths.ContainsDir(roots[j], roots[i]) {
 				t.Errorf("root %q is nested under %q — de-nesting failed", roots[i], roots[j])
 			}
 		}
@@ -122,7 +123,7 @@ func TestVersionRootOwners_SharedDir(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("AGENTSYNC_TARGET_ROOT", root)
 	reg := registryFactory()
-	owners := versionRootOwners(reg, []string{"codex", "warp"}, adapter.ScopeUser, "")
+	owners := versionRootOwners(reg, []string{"codex", "warp"}, adapter.ScopeUser, "", root)
 	agentsSkills := filepath.Join(root, ".agents", "skills")
 	got := owners[agentsSkills]
 	if !contains(got, "codex") || !contains(got, "warp") {
@@ -164,7 +165,7 @@ func TestOwnersFor_RecoversFoldedRoot(t *testing.T) {
 	t.Setenv("AGENTSYNC_TARGET_ROOT", root)
 	reg := registryFactory()
 
-	owners := versionRootOwners(reg, []string{"claude", "opencode"}, adapter.ScopeUser, "")
+	owners := versionRootOwners(reg, []string{"claude", "opencode"}, adapter.ScopeUser, "", root)
 	claudeSkills := filepath.Join(root, ".claude", "skills") // opencode's own de-nested root
 
 	// Precondition: the child root is folded away — it is NOT an exact key.

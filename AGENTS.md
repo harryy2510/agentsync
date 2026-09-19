@@ -283,6 +283,22 @@ doc, `.golangci.yml` (forbidigo rules), and `SECURITY.md`.
 
 - `just build` / `just test-fast`; full gate `just test-release` (hermetic container).
 - FS-touching tests refuse to run on host without `AGENTSYNC_TEST_IN_CONTAINER=1`.
+- **The harness scrubs the ambient environment at init** — importing
+  `internal/testenv` (every FS-touching package does, for its guard; `internal/ui`
+  does with a blank import) unsets every `AGENTSYNC_*` override except the
+  harness's own `AGENTSYNC_TEST_*`/`AGENTSYNC_LIVE_*` signals, plus `GROK_HOME`,
+  `NO_COLOR`, `EDITOR`, before any TestMain or `t.Setenv`. A test that needs one
+  sets it with `t.Setenv`. `AGENTSYNC_TARGET_ROOT` is a sandbox that outranks
+  `AGENTSYNC_HOME`/`GROK_HOME` in `internal/paths`; `internal/cli` tests also run
+  under a throwaway `HOME` and the package fails if a test writes there. If
+  production code starts reading a NEW third-party path variable, route it
+  through `paths.AgentHomeOverride` (a source-scan test rejects a raw
+  `os.Getenv`), add it to `testenv.agentHomeVars`, and to the configured-env leg
+  in `scripts/test-in-container.sh` + `ci.yml` (a parity test checks) — issue
+  #270 is what happens otherwise. `PATH` cannot be scrubbed: a test whose result
+  depends on an agent binary being ABSENT sets `"PATH": t.TempDir()` itself; the
+  configured leg (`test/container/entrypoint.sh`) puts a stub for every probed
+  agent binary on PATH so a test that forgets is red in CI.
 - Lint/format/tidy with `just lint` — the single dev entry point. It rewrites Go
   sources (`gofmt -s` + gofumpt) and deliberately tidies `go.mod`/`go.sum`
   (`go mod tidy`) in place, then runs golangci-lint via `go run

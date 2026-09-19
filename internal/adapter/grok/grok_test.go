@@ -166,16 +166,18 @@ headers = { Authorization = "Bearer synthetic-token" }
 
 func TestScopesDetectionAndHome(t *testing.T) {
 	root, project, custom := t.TempDir(), t.TempDir(), t.TempDir()
-	t.Setenv("PATH", t.TempDir())
-	a := grok.New(grok.Options{TargetRoot: root})
+	// Detection is driven through the injectable LookPath hook (like every other
+	// deep adapter), never the real PATH — so the developer's installed binaries
+	// cannot move this test (issue #270).
+	missing := func(string) (string, error) { return "", errors.New("not on PATH") }
+	found := func(file string) (string, error) { return "/fake/bin/" + file, nil }
+	a := grok.New(grok.Options{TargetRoot: root, LookPath: missing})
 	if detected, err := a.Detect(); err != nil || detected {
 		t.Fatalf("absent detection: %v %v", detected, err)
 	}
-	writeFile(t, filepath.Join(os.Getenv("PATH"), "grok"), []byte("#!/bin/sh\nexit 0\n"), 0o755)
-	if detected, err := a.Detect(); err != nil || !detected {
+	if detected, err := grok.New(grok.Options{TargetRoot: root, LookPath: found}).Detect(); err != nil || !detected {
 		t.Fatalf("binary detection: %v %v", detected, err)
 	}
-	t.Setenv("PATH", t.TempDir())
 	if err := os.MkdirAll(filepath.Join(root, ".grok"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -399,5 +401,137 @@ func TestGrokHomeValidationAndCleaning(t *testing.T) {
 	}
 	if roots := rel.VersionRoots(adapter.ScopeUser, ""); roots != nil {
 		t.Fatalf("expected nil version roots on invalid GROK_HOME, got %v", roots)
+	}
+}
+
+// TestGrokHomeRefusal pins validateHome's refusal of `/` and $HOME on every path
+// (issue #270): Detect errors naming GROK_HOME with a suggestion, VersionRoots
+// is nil. The "unclean" rows are built by string concatenation, NOT
+// filepath.Join (which would clean them before the adapter ever saw them), so
+// the raw shell-typed spelling is what reaches New. A GROK_HOME outside $HOME —
+// upstream's intended use — and one that is merely an ANCESTOR of $HOME are
+// accepted here; the ancestor case is the central git-backup guard's job
+// (internal/cli), and this adapter declares it like any root.
+func TestGrokHomeRefusal(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home", "alice")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sep := string(filepath.Separator)
+	cases := []struct {
+		name     string
+		grokHome string
+		want     []string
+		refused  bool // validateHome rejects it: Detect must error
+	}{
+		{name: "default ~/.grok", grokHome: "", want: []string{filepath.Join(home, ".grok")}},
+		{name: "GROK_HOME under $HOME", grokHome: filepath.Join(home, "grok-cfg"), want: []string{filepath.Join(home, "grok-cfg")}},
+		{name: "GROK_HOME outside $HOME is accepted and declared", grokHome: filepath.Join(base, "opt", "grok"), want: []string{filepath.Join(base, "opt", "grok")}},
+		{name: "GROK_HOME ancestor of $HOME is accepted and declared (central guard drops it)", grokHome: filepath.Join(base, "home"), want: []string{filepath.Join(base, "home")}},
+		{name: "GROK_HOME == $HOME is refused", grokHome: home, refused: true},
+		{name: "GROK_HOME == $HOME with trailing separator is refused", grokHome: home + sep, refused: true},
+		{name: "GROK_HOME == $HOME spelled through .. is refused", grokHome: home + sep + "grok-cfg" + sep + "..", refused: true},
+		{name: "GROK_HOME=/ is refused", grokHome: sep, refused: true},
+		{name: "GROK_HOME=/ spelled through .. is refused", grokHome: sep + "tmp" + sep + "..", refused: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := grok.New(grok.Options{TargetRoot: home, GrokHome: tc.grokHome})
+			got := a.VersionRoots(adapter.ScopeUser, "")
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("VersionRoots(GROK_HOME=%q) = %v, want %v", tc.grokHome, got, tc.want)
+			}
+			_, err := a.Detect()
+			if tc.refused {
+				if err == nil {
+					t.Fatalf("Detect(GROK_HOME=%q) = nil error; want validateHome to refuse it", tc.grokHome)
+				}
+				for _, want := range []string{"GROK_HOME", filepath.Join(home, ".grok")} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("refusal must name %q so the user can act on it; got: %v", want, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Detect(GROK_HOME=%q) = %v; want nil (an absolute GROK_HOME below the root and off $HOME is legitimate)", tc.grokHome, err)
+			}
+			// Accepted means accepted on the write path too, not just Detect.
+			ops, _, err := a.Render(secrets.ForRender(source.Canonical{Memory: source.Memory{Body: "x\n"}}), adapter.ScopeUser, "")
+			if err != nil || len(ops) == 0 {
+				t.Fatalf("Render(GROK_HOME=%q) = %d ops, %v; want a memory write and nil error", tc.grokHome, len(ops), err)
+			}
+		})
+	}
+}
+
+// TestGrokHomeRefusal_SymlinkedHome pins that the $HOME refusal follows the
+// DIRECTORY, not the spelling: a GROK_HOME that is a symlink to $HOME (or $HOME
+// reached through a symlinked parent) is still refused. A byte compare would
+// have let it through, and the apply tail would have inited a repo at $HOME.
+func TestGrokHomeRefusal_SymlinkedHome(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "real-home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link-to-home")
+	if err := os.Symlink(home, link); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	cases := []struct {
+		name       string
+		targetRoot string
+		grokHome   string
+	}{
+		{name: "GROK_HOME is a symlink to $HOME", targetRoot: home, grokHome: link},
+		{name: "$HOME is itself the symlink and GROK_HOME the real dir", targetRoot: link, grokHome: home},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := grok.New(grok.Options{TargetRoot: tc.targetRoot, GrokHome: tc.grokHome})
+			if _, err := a.Detect(); err == nil {
+				t.Fatalf("Detect(GROK_HOME=%q, HOME=%q) = nil; want refusal — the two spellings name one directory", tc.grokHome, tc.targetRoot)
+			}
+			if roots := a.VersionRoots(adapter.ScopeUser, ""); roots != nil {
+				t.Fatalf("VersionRoots = %v; want nil", roots)
+			}
+		})
+	}
+	// Control: a symlink to a directory that is NOT $HOME is fine.
+	other := filepath.Join(base, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherLink := filepath.Join(base, "link-to-other")
+	if err := os.Symlink(other, otherLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := grok.New(grok.Options{TargetRoot: home, GrokHome: otherLink}).Detect(); err != nil {
+		t.Fatalf("a symlink to a non-home dir must be accepted: %v", err)
+	}
+}
+
+// TestGrokValidateHome_RefusalIsUniform pins that the `/` and $HOME refusal is
+// the SAME gate on every path — Detect, Render, Ingest, VersionRoots — not a
+// Detect-only nicety, so no command can write to `/` or `$HOME` as if it were
+// Grok's config dir.
+func TestGrokValidateHome_RefusalIsUniform(t *testing.T) {
+	home := t.TempDir()
+	for _, bad := range []string{string(filepath.Separator), home} {
+		a := grok.New(grok.Options{TargetRoot: home, GrokHome: bad, Stderr: io.Discard})
+		if _, err := a.Detect(); err == nil {
+			t.Errorf("Detect(GROK_HOME=%q): want refusal", bad)
+		}
+		if _, err := a.Ingest(adapter.ScopeUser, ""); err == nil {
+			t.Errorf("Ingest(GROK_HOME=%q): want refusal", bad)
+		}
+		if _, _, err := a.Render(secrets.ForRender(source.Canonical{Memory: source.Memory{Body: "x\n"}}), adapter.ScopeUser, ""); err == nil {
+			t.Errorf("Render(GROK_HOME=%q): want refusal", bad)
+		}
+		if roots := a.VersionRoots(adapter.ScopeUser, ""); roots != nil {
+			t.Errorf("VersionRoots(GROK_HOME=%q) = %v; want nil", bad, roots)
+		}
 	}
 }

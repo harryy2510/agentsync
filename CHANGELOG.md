@@ -19,6 +19,36 @@ source layout, CLI surface, and state schema are stabilizing but may still chang
 
 ### Fixed
 
+- **`AGENTSYNC_TARGET_ROOT` is a real sandbox, and the test suite is hermetic
+  against a configured shell**
+  ([#270](https://github.com/spxrogers/agentsync/issues/270)). While the
+  testing redirect is set, the canonical source resolves to
+  `<root>/.agentsync` and `AGENTSYNC_HOME` / `GROK_HOME` are ignored;
+  previously an exported `AGENTSYNC_HOME` outranked it, so on a machine that
+  actually uses agentsync `go test ./...` aimed 535 `internal/cli` tests (the
+  secret-leak guard among them) at the developer's real `~/.agentsync`. For
+  real users, who never set the redirect, `AGENTSYNC_HOME` still wins over the
+  `~/.agentsync` default. The harness now scrubs ambient `AGENTSYNC_*` /
+  `GROK_HOME` / `NO_COLOR` / `EDITOR` values before any test runs, and CI runs
+  the suite both pristine and with them exported (`just
+  test-release-configured`).
+
+- **agentsync never inits a git backup repo at or above `$HOME`, enforced
+  centrally** ([#270](https://github.com/spxrogers/agentsync/issues/270)). A
+  version root that is your home directory or an ancestor of it (`/`, `/home`,
+  a symlinked or case-varied spelling) would have folded every other agent's
+  directory into itself on de-nesting and had `apply` `git init` your home.
+  Such roots are now dropped from git backup with a warning, and `doctor`
+  reports them. Only an env-derived root can trip this — Grok Build's
+  `GROK_HOME` — and that adapter now refuses `GROK_HOME=/` and
+  `GROK_HOME=$HOME` outright on every command, with an error naming the
+  variable and suggesting `~/.grok` (see [Grok support](docs/grok.md)).
+  The guard tests both the *directory* and the *spelling*: a symlink to your
+  home or a case-varied spelling of it on macOS/Windows is caught, and so is
+  an ancestor of your home's own path when the home itself is a symlink
+  elsewhere. De-nesting (one repo per declared directory tree) is unchanged
+  and stays by declared path.
+
 - **`reconcile`'s MCP write-back translates through the agent that rendered the
   destination, instead of guessing from the JSON pointer's top-level key**
   ([#235](https://github.com/spxrogers/agentsync/issues/235)). The key-level

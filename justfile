@@ -38,6 +38,15 @@ test-bdd:
 test-release:
     ./scripts/test-in-container.sh
 
+# The same gate as a CONFIGURED machine sees it: AGENTSYNC_HOME, GROK_HOME,
+# NO_COLOR and EDITOR exported into the container (fixed values — see the runner
+# script). A pristine environment is also what CI looks like, so without this
+# leg the suite is never exercised the way a developer who uses agentsync runs
+# it (issue #270: an exported AGENTSYNC_HOME once redded out 535 tests). CI runs
+# both this and `test-release`.
+test-release-configured:
+    AGENTSYNC_TEST_CONFIGURED_ENV=1 ./scripts/test-in-container.sh
+
 # The packages below are the pure-unit set: zero filesystem access.
 # Anything that touches the FS (even tmp dirs) is gated behind the
 # container — see internal/testenv/container.go.

@@ -14,8 +14,27 @@ Enable the dedicated adapter with `agentsync agent add grok`, then run
 
 An absolute `GROK_HOME` replaces `~/.grok` at user scope. Project paths stay
 project-local. `AGENTSYNC_TARGET_ROOT` takes precedence over `GROK_HOME` to
-keep redirected runs isolated. Detection checks the resolved config directory
-or the `grok` executable on `PATH`.
+keep redirected runs isolated (it is read through `paths.AgentHomeOverride`,
+never a raw `os.Getenv`). Detection checks the resolved config directory or the
+`grok` executable on `PATH`.
+
+Two values are refused outright, on every command: a `GROK_HOME` of `/` and a
+`GROK_HOME` that is your home directory — by *directory*, not spelling, so a
+symlink to `$HOME` or a case-varied spelling on macOS is refused too. Neither
+is ever a real Grok config dir (`/config.toml`, `~/AGENTS.md`, `~/skills/…`),
+and either would have the apply tail's de-nesting pass fold every other agent's
+directory into it and `git init` your home directory or the filesystem root,
+breaking the invariant that agentsync never inits a repo at `$HOME`. The error
+names `GROK_HOME` and suggests `~/.grok` (`TestGrokHomeRefusal`,
+`TestGrokHomeRefusal_SymlinkedHome`, `TestGrokValidateHome_RefusalIsUniform`).
+A `GROK_HOME` outside `$HOME` is accepted and versioned by destination git
+backup like any other root. A `GROK_HOME` that is some *other* ancestor of
+`$HOME` (`/home`, `/Users`) is accepted for rendering and capture; the apply
+tail's central never-at-or-above-`$HOME` guard then drops it from git backup
+and says so in a warning (`TestEnabledVersionRoots_NeverAtOrAboveHome`,
+`TestPartitionVersionRoots_LexicalAncestorOfSymlinkedHome`), `doctor` reports it
+(`TestDoctorReportsHomeSwallowingRoot`), and `revert` skips it
+(`TestRevertAgent_SkipsHomeSwallowingRoot`).
 
 ## MCP and ownership
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/spxrogers/agentsync/internal/adapter"
 	"github.com/spxrogers/agentsync/internal/adapter/claude"
+	"github.com/spxrogers/agentsync/internal/paths"
 	"github.com/spxrogers/agentsync/internal/source"
 )
 
@@ -128,10 +129,49 @@ func (a *Adapter) readMarkdown(path string) (map[string]any, string, bool, error
 	return fm, body, true, nil
 }
 
-// Never turn a relative override into writes relative to agentsync's cwd.
+// validateHome is the single gate every GROK_HOME-consuming path goes through
+// (Detect, Render, Ingest, hooks, VersionRoots). It refuses three values that are
+// never a legitimate Grok config directory and would make agentsync misbehave:
+//
+//   - a relative path — it would turn into writes relative to agentsync's cwd;
+//   - the filesystem root — `/config.toml`, `/AGENTS.md`, `/skills/…`, and a
+//     version root that swallows every other agent's dir;
+//   - $HOME itself (the adapter's TargetRoot) — same collapse, plus agentsync
+//     would `git init` the user's home directory, breaking the documented
+//     invariant that it never inits a repo at $HOME. Compared with
+//     paths.SameDirResolved, so a symlinked or (macOS/Windows) case-varied spelling
+//     of $HOME is caught too, not just the byte-identical one.
+//
+// An absolute GROK_HOME anywhere else, inside or outside $HOME, is what upstream
+// provides the variable for and is accepted here. An ANCESTOR of $HOME other than
+// the root (`/home`, `/Users`) is not an error — that is a plausible if odd place
+// to keep a config dir — but the apply tail's central never-at-or-above-$HOME
+// guard (internal/cli enabledVersionRoots) drops it from git backup, with a
+// warning, so the collapse cannot happen either way (issue #270).
+//
+// New cleans GrokHome, so the Clean here is defensive for an Adapter built
+// without it. TargetRoot is paths.HomeDir and is never empty in production
+// (registryFactory); the `.` check only keeps a zero Options from comparing
+// against the cwd.
 func (a *Adapter) validateHome() error {
-	if a.opts.GrokHome != "" && !filepath.IsAbs(a.opts.GrokHome) {
+	h := a.opts.GrokHome
+	if h == "" {
+		return nil
+	}
+	if !filepath.IsAbs(h) {
 		return fmt.Errorf("GROK_HOME must be an absolute path")
+	}
+	h = filepath.Clean(h)
+	home := filepath.Clean(a.opts.TargetRoot)
+	suggest := "~/.grok"
+	if home != "" && home != "." {
+		suggest = filepath.Join(home, ".grok")
+	}
+	if h == filepath.VolumeName(h)+string(filepath.Separator) {
+		return fmt.Errorf("GROK_HOME must not be the filesystem root (%s); point it at a directory such as %s", h, suggest)
+	}
+	if home != "" && home != "." && paths.SameDirResolved(h, home) {
+		return fmt.Errorf("GROK_HOME must not be your home directory (%s); point it at a directory such as %s", h, suggest)
 	}
 	return nil
 }

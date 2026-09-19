@@ -2,7 +2,6 @@ package cli
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/spxrogers/agentsync/internal/adapter"
@@ -39,6 +38,13 @@ func TestEveryAdapterRejectsTraversalComponentName(t *testing.T) {
 	// registryFactory); resolve it the same way so the user-scope containment
 	// assertion knows the expected root.
 	userHome := paths.HomeDir(paths.OSEnv{})
+	// Grok's user-scope root is env-derived: an absolute GROK_HOME legitimately
+	// lives OUTSIDE $HOME (that is what upstream provides it for), so it is a
+	// second legitimate destination root, not an escape. The harness scrubs an
+	// ambient GROK_HOME (testenv.ScrubAmbient), so this is "" in a normal run;
+	// resolving it through the same helper registryFactory uses keeps the
+	// assertion honest if a test ever sets one deliberately (issue #270).
+	grokHome := paths.AgentHomeOverride(paths.OSEnv{}, "GROK_HOME")
 
 	// Malicious names — mirror internal/source/writer_test.go's degenerate and
 	// control/deceptive-rune tables. A raw rune would smuggle a terminal escape
@@ -103,10 +109,11 @@ func TestEveryAdapterRejectsTraversalComponentName(t *testing.T) {
 					// file at project scope, so accept either — the point is that
 					// nothing escapes to an arbitrary location like /tmp or /etc.
 					contained := underRoot(op.Path, userHome) ||
-						(sc.project != "" && underRoot(op.Path, sc.project))
+						(sc.project != "" && underRoot(op.Path, sc.project)) ||
+						(name == "grok" && grokHome != "" && underRoot(op.Path, grokHome))
 					if !contained {
-						t.Errorf("%s: FileOp path %q escapes the destination root (HOME=%q, project=%q)",
-							name, op.Path, userHome, sc.project)
+						t.Errorf("%s: FileOp path %q escapes the destination root (HOME=%q, project=%q, GROK_HOME=%q)",
+							name, op.Path, userHome, sc.project, grokHome)
 					}
 				}
 			})
@@ -116,6 +123,36 @@ func TestEveryAdapterRejectsTraversalComponentName(t *testing.T) {
 	if !sawControlOp {
 		t.Fatal("no adapter produced a FileOp for the legitimate control name — the guard's happy path is untested (vacuous)")
 	}
+
+	// Grok with a DELIBERATE GROK_HOME outside $HOME: the env-derived root is a
+	// legitimate destination, every user-scope write lands under it and none
+	// under ~/.grok. This subcase is what keeps the grokHome branch above live —
+	// in a normal run the harness has scrubbed GROK_HOME and it is "".
+	t.Run("grok/GROK_HOME-outside-HOME/user", func(t *testing.T) {
+		override := filepath.Join(t.TempDir(), "grok-home")
+		t.Setenv("GROK_HOME", override)
+		reg := registryFactory()
+		plan, err := render.Plan(secrets.ForRender(traversalModel("review", false)), reg, []string{"grok"}, adapter.ScopeUser, "", nil, userHome)
+		if err != nil {
+			t.Fatalf("Plan(grok, GROK_HOME=%q) = %v; want nil", override, err)
+		}
+		saw := false
+		for _, op := range plan.PerAgent["grok"].Ops {
+			if op.Action != adapter.ActionWrite {
+				continue
+			}
+			saw = true
+			if !underRoot(op.Path, override) {
+				t.Errorf("grok: FileOp path %q is not under GROK_HOME %q", op.Path, override)
+			}
+			if underRoot(op.Path, filepath.Join(userHome, ".grok")) {
+				t.Errorf("grok: FileOp path %q landed in ~/.grok although GROK_HOME=%q is set", op.Path, override)
+			}
+		}
+		if !saw {
+			t.Fatal("grok emitted no writes under GROK_HOME (vacuous)")
+		}
+	})
 }
 
 // traversalModel builds a canonical whose subagent, command, and skill all carry
@@ -139,11 +176,7 @@ func traversalModel(name string, projectScope bool) source.Canonical {
 	return c
 }
 
-// underRoot reports whether p is root or lives beneath it (no ".." escape).
-func underRoot(p, root string) bool {
-	rel, err := filepath.Rel(root, p)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
+// underRoot reports whether p is root or lives beneath it (no ".." escape) —
+// paths.ContainsDir, the predicate production uses, so the guard and the code
+// it guards cannot disagree about containment.
+func underRoot(p, root string) bool { return paths.ContainsDir(root, p) }

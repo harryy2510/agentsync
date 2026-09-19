@@ -17,6 +17,10 @@ type Options struct {
 	TargetRoot string
 	GrokHome   string // optional absolute GROK_HOME override; user scope only
 	Stderr     io.Writer
+	// LookPath overrides exec.LookPath for testing. nil means use exec.LookPath.
+	// Every deep adapter carries this hook so Detect never depends on what the
+	// developer happens to have on PATH (issue #270).
+	LookPath func(file string) (string, error)
 }
 
 // Adapter implements Grok Build's native render and capture boundary.
@@ -47,7 +51,11 @@ func (a *Adapter) Detect() (bool, error) {
 	if info, err := os.Stat(a.resolvePaths(adapter.ScopeUser, "").ConfigDir); err == nil && info.IsDir() {
 		return true, nil
 	}
-	_, err := exec.LookPath("grok")
+	lookPath := a.opts.LookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	_, err := lookPath("grok")
 	return err == nil, nil
 }
 
@@ -62,6 +70,14 @@ func (a *Adapter) KeyMergeStrategyForPath(path string) string {
 	return a.KeyMergeStrategy()
 }
 
+// VersionRoots declares the user-scope config dir for destination git backup. An
+// absolute GROK_HOME may legitimately live outside $HOME (that is what upstream
+// provides it for) and is versioned there like any other root. validateHome
+// refuses `/` and $HOME outright (every path errors, not just this one); a
+// GROK_HOME that is some other ancestor of $HOME (`/home`, `/Users`) is declared
+// here like any root and dropped — with a warning — by the apply tail's central
+// never-at-or-above-$HOME guard (internal/cli enabledVersionRoots), which owns
+// that invariant for every adapter (issue #270).
 func (a *Adapter) VersionRoots(scope adapter.Scope, project string) []string {
 	if scope != adapter.ScopeUser || a.validateHome() != nil {
 		return nil
