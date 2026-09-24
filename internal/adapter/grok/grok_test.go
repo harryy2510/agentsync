@@ -561,7 +561,29 @@ func TestHookTimeoutRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	handler := parsed["hooks"].(map[string]any)["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	// Each step is checked rather than chained: a bare assertion chain panics
+	// on a shape change instead of failing with the step that broke.
+	hooks, ok := parsed["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("\"hooks\" is %T, want an object\n%s", parsed["hooks"], data)
+	}
+	defs, ok := hooks["PreToolUse"].([]any)
+	if !ok || len(defs) == 0 {
+		t.Fatalf("hooks.PreToolUse is %T (len 0?), want a non-empty array\n%s", hooks["PreToolUse"], data)
+	}
+	def, ok := defs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("hooks.PreToolUse[0] is %T, want an object\n%s", defs[0], data)
+	}
+	handlers, ok := def["hooks"].([]any)
+	if !ok || len(handlers) == 0 {
+		t.Fatalf("hooks.PreToolUse[0].hooks is %T (len 0?), want a non-empty array\n%s", def["hooks"], data)
+	}
+	handler, ok := handlers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("hooks.PreToolUse[0].hooks[0] is %T, want an object\n%s", handlers[0], data)
+	}
+	// Grok documents its hook timeout in SECONDS, so 25 goes out as 25.
 	if handler["timeout"] != float64(25) {
 		t.Fatalf("expected timeout 25, got %v (%T)", handler["timeout"], handler["timeout"])
 	}

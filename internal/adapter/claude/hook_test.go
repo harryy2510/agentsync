@@ -256,7 +256,7 @@ func TestIngest_HookGuardWarnsAndSkips(t *testing.T) {
 		{
 			name:      "non-integer timeout",
 			hooks:     `{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "echo before", "timeout": "fast" } ] } ] }`,
-			wantWarns: []string{`"timeout" is not an integer`, "event not captured"},
+			wantWarns: []string{`a "timeout" that is not a number`, "event not captured"},
 		},
 		{
 			name:      "non-command handler",
@@ -379,8 +379,39 @@ func TestIngest_HookTimeoutRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(finalRaw, &final); err != nil {
 		t.Fatalf("parse final: %v", err)
 	}
-	h := final["hooks"].(map[string]any)["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	h := firstRenderedHandler(t, final, "PreToolUse", finalRaw)
+	// Claude Code documents `timeout` in SECONDS, so the canonical value goes
+	// out unconverted here. (Gemini's field is milliseconds; see the
+	// cross-adapter test in the gemini package.)
 	if h["timeout"] != float64(45) {
 		t.Fatalf("expected timeout 45, got %v (%T)", h["timeout"], h["timeout"])
 	}
+}
+
+// firstRenderedHandler walks a rendered settings.json down to one event's first
+// handler object, checking each step so a shape change reports the step that
+// broke instead of panicking inside a chain of bare type assertions.
+func firstRenderedHandler(t *testing.T, doc map[string]any, event string, raw []byte) map[string]any {
+	t.Helper()
+	hooks, ok := doc["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("\"hooks\" is %T, want an object\n%s", doc["hooks"], raw)
+	}
+	defs, ok := hooks[event].([]any)
+	if !ok || len(defs) == 0 {
+		t.Fatalf("hooks[%q] is %T (len 0?), want a non-empty array\n%s", event, hooks[event], raw)
+	}
+	def, ok := defs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("hooks[%q][0] is %T, want an object\n%s", event, defs[0], raw)
+	}
+	handlers, ok := def["hooks"].([]any)
+	if !ok || len(handlers) == 0 {
+		t.Fatalf("hooks[%q][0].hooks is %T (len 0?), want a non-empty array\n%s", event, def["hooks"], raw)
+	}
+	h, ok := handlers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("hooks[%q][0].hooks[0] is %T, want an object\n%s", event, handlers[0], raw)
+	}
+	return h
 }

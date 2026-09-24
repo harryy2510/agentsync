@@ -1,7 +1,6 @@
 package adapter_test
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -44,47 +43,5 @@ func TestUnmodeledKeys(t *testing.T) {
 	}
 }
 
-func TestParseHookTimeout(t *testing.T) {
-	t.Run("missing", func(t *testing.T) {
-		timeout, ok, structural := adapter.ParseHookTimeout(map[string]any{"command": "x"})
-		if timeout != 0 || !ok || structural {
-			t.Fatalf("missing timeout: %d ok=%v structural=%v", timeout, ok, structural)
-		}
-	})
-	t.Run("int", func(t *testing.T) {
-		timeout, ok, structural := adapter.ParseHookTimeout(map[string]any{"timeout": 30})
-		if timeout != 30 || !ok || structural {
-			t.Fatalf("int timeout: %d ok=%v structural=%v", timeout, ok, structural)
-		}
-	})
-	t.Run("json.Number", func(t *testing.T) {
-		timeout, ok, structural := adapter.ParseHookTimeout(map[string]any{"timeout": json.Number("12")})
-		if timeout != 12 || !ok || structural {
-			t.Fatalf("json.Number timeout: %d ok=%v structural=%v", timeout, ok, structural)
-		}
-	})
-	t.Run("negative", func(t *testing.T) {
-		timeout, ok, structural := adapter.ParseHookTimeout(map[string]any{"timeout": -1})
-		if timeout != 0 || ok || !structural {
-			t.Fatalf("negative timeout: %d ok=%v structural=%v", timeout, ok, structural)
-		}
-	})
-	t.Run("string", func(t *testing.T) {
-		timeout, ok, structural := adapter.ParseHookTimeout(map[string]any{"timeout": "30"})
-		if timeout != 0 || ok || !structural {
-			t.Fatalf("string timeout: %d ok=%v structural=%v", timeout, ok, structural)
-		}
-	})
-}
-
-func TestSetHookTimeout(t *testing.T) {
-	h := map[string]any{"command": "x"}
-	adapter.SetHookTimeout(h, 0)
-	if _, ok := h["timeout"]; ok {
-		t.Fatal("zero timeout must omit the field")
-	}
-	adapter.SetHookTimeout(h, 8)
-	if h["timeout"] != 8 {
-		t.Fatalf("timeout not written: %#v", h)
-	}
-}
+// ParseHookTimeout / SetHookTimeout and their millisecond twins moved to
+// hook_fields.go; their tests live in hook_fields_test.go.

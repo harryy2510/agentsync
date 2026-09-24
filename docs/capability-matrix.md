@@ -256,12 +256,20 @@ write-back alike — it is neither modeled nor passed through.
 
 **Claude**
 
-- **Hook** — agentsync models only `command` hooks (`matcher` + `command`), which
+- **Hook** — agentsync models only `command` hooks (`matcher` + `command` +
+  `timeout`), which
   round-trip losslessly. A Claude hook that uses a non-`command` handler type, or
   carries a field agentsync doesn't model (e.g. `statusMessage`), is **reported, not
   silently dropped**: on render a non-command handler surfaces as a Skip and is
   never emitted (so agentsync's owned-array write can't clobber a native handler),
-  and on ingest the whole event is left uncaptured with a warning. If agentsync
+  and on ingest the whole event is left uncaptured with a warning. `timeout` is
+  modeled in **seconds** and must be a whole number greater than zero: a native
+  `timeout` that is negative, fractional, or an explicit `0` is refused the same
+  way (agentsync cannot tell a captured `0` from "no timeout key", and
+  re-rendering it would swap in the harness default). **Gemini CLI counts this
+  field in milliseconds**, so its adapter — and only its adapter — converts on
+  both legs; a native Gemini timeout that is not a whole number of seconds is
+  refused rather than rounded. If agentsync
   *previously* captured the event (it was clean then, enriched natively since),
   `import` also retires the now-stale canonical `hooks/<event>.toml` — so the
   next apply never *owns*, and therefore never rewrites, your richer native

@@ -1240,7 +1240,7 @@ func pluginProvided(fs afero.Fs, agentsyncHome, projectRoot string, sc adapter.S
 }
 
 // hookSignature identifies one hook HANDLER by everything that reaches a
-// destination: its event, matcher, type, and command. It is the join key between
+// destination: its event, matcher, type, command, and timeout. It is the join key between
 // a plugin's projected hooks (which carry provenance) and the agent's native
 // ingest (which does not), so import can drop exactly the handlers a plugin
 // contributed and keep the ones the user wrote.

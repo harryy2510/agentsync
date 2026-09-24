@@ -300,11 +300,11 @@ func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) 
 					structural = true
 					break defs
 				}
-				timeout, tok, timeoutStructural := adapter.ParseHookTimeout(h)
-				if !tok {
-					fmt.Fprintf(warn, "warning: hook event %q has a handler whose \"timeout\" is not an integer; event not captured\n", event)
+				timeout, tres := adapter.ParseHookTimeout(h)
+				if tres != source.HookTimeoutOK {
+					fmt.Fprintf(warn, "warning: hook event %q has a handler with %s; event not captured\n", event, tres.Reason())
 					representable = false
-					structural = timeoutStructural
+					structural = tres.Structural()
 					break defs
 				}
 				captured = append(captured, source.Hook{

@@ -16,8 +16,10 @@ var (
 )
 
 // ingestHooks captures only whole events representable by source.Hook. Native
-// fields such as timeout and HTTP handlers refuse the event, allowing import to
-// retire stale canonical hooks. Malformed shapes only warn and never retire.
+// HTTP handlers, and a `timeout` outside what source.Hook.Timeout can carry,
+// refuse the event, allowing import to retire stale canonical hooks. A command
+// timeout in range is modeled directly (seconds, per Grok's documented hook
+// schema). Malformed shapes only warn and never retire.
 // Unsupported events have no canonical equivalent and are skipped without refusal.
 // The first invalid definition or handler determines the refusal classification.
 func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) {
@@ -105,11 +107,11 @@ func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) 
 					structural = true
 					break defs
 				}
-				timeout, tok, timeoutStructural := adapter.ParseHookTimeout(h)
-				if !tok {
-					fmt.Fprintf(warn, "warning: hook event %q has a handler whose \"timeout\" is not an integer; event not captured\n", event)
+				timeout, tres := adapter.ParseHookTimeout(h)
+				if tres != source.HookTimeoutOK {
+					fmt.Fprintf(warn, "warning: hook event %q has a handler with %s; event not captured\n", event, tres.Reason())
 					representable = false
-					structural = timeoutStructural
+					structural = tres.Structural()
 					break defs
 				}
 				captured = append(captured, source.Hook{

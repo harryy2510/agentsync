@@ -126,8 +126,8 @@ func (a *Adapter) renderHooks(c source.Canonical, p Paths) ([]adapter.FileOp, []
 }
 
 // cursorHookEntryModeledKeys are the per-entry hooks.json fields the canonical
-// source.Hook can represent. Cursor's documented entry schema is wider (timeout,
-// failClosed, loop_limit, and prompt/model for prompt-type hooks); an entry
+// source.Hook can represent. Cursor's documented entry schema is wider
+// (failClosed, loop_limit, and prompt/model for prompt-type hooks); an entry
 // carrying any unmodeled field cannot round-trip, and capturing its modeled
 // subset would let the next apply — which owns the whole per-event array —
 // rewrite the user's native entry without those fields. ingestHooks therefore
@@ -235,11 +235,11 @@ func ingestHooks(raw any, warn io.Writer) (out []source.Hook, refused []string) 
 				structural = true
 				break
 			}
-			timeout, tok, timeoutStructural := adapter.ParseHookTimeout(entry)
-			if !tok {
-				fmt.Fprintf(warn, "warning: hook event %q has an entry whose \"timeout\" is not an integer; event not captured\n", cursorEvent)
+			timeout, tres := adapter.ParseHookTimeout(entry)
+			if tres != source.HookTimeoutOK {
+				fmt.Fprintf(warn, "warning: hook event %q has an entry with %s; event not captured\n", cursorEvent, tres.Reason())
 				representable = false
-				structural = timeoutStructural
+				structural = tres.Structural()
 				break
 			}
 			captured = append(captured, source.Hook{

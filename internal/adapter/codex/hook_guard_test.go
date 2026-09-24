@@ -57,6 +57,50 @@ timeout = 30
 `, false,
 		},
 		{
+			// A TOML string where a number belongs is a typo: STRUCTURAL, so
+			// import must not retire the canonical hooks/PreToolUse.toml on it.
+			"structural: non-numeric timeout",
+			`[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "x"
+timeout = "fast"
+`, false,
+		},
+		{
+			// A well-formed number the model cannot carry is SEMANTIC, so the
+			// event does retire — the mirror image of the row above.
+			"semantic: negative timeout",
+			`[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "x"
+timeout = -5
+`, true,
+		},
+		{
+			"semantic: fractional timeout",
+			`[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "x"
+timeout = 1.5
+`, true,
+		},
+		{
+			"semantic: explicit zero timeout is indistinguishable from absent",
+			`[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "x"
+timeout = 0
+`, true,
+		},
+		{
 			"semantic: unmodeled handler field",
 			`[[hooks.PreToolUse]]
 matcher = "Bash"

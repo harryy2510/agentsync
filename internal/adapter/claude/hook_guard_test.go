@@ -90,6 +90,26 @@ func TestRefusedHookEvents_StructuralVsSemantic(t *testing.T) {
 			"modeled: timeout with command is representable",
 			`{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": 30 } ] } ] }`, false,
 		},
+		// A NUMBER the canonical int cannot carry is a SEMANTIC refusal, not a
+		// structural one. Classifying it structurally would leave the event
+		// un-retired, and the next apply would rewrite the user's native array
+		// without the timeout they set — the #124 hole from the other side.
+		{
+			"semantic: negative timeout",
+			`{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": -5 } ] } ] }`, true,
+		},
+		{
+			"semantic: fractional timeout",
+			`{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": 1.5 } ] } ] }`, true,
+		},
+		{
+			"semantic: explicit zero timeout is indistinguishable from absent",
+			`{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": 0 } ] } ] }`, true,
+		},
+		{
+			"modeled: whole-valued float timeout is the same number",
+			`{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "timeout": 30.0 } ] } ] }`, false,
+		},
 		{
 			"semantic: unmodeled handler field",
 			`{ "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "x", "statusMessage": "starting" } ] } ] }`, true,
