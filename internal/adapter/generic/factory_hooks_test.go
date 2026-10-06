@@ -170,3 +170,140 @@ func TestIngest_FactoryHooks_CommandRegexRefusesEvent(t *testing.T) {
 		t.Fatalf("warning = %q", warn.String())
 	}
 }
+
+// TestRefusedHookEvents_PostCompactIsNotRetired pins the shared-file rule.
+// PostCompact is not a Droid event, so a native PostCompact array must not be
+// refused: import retires every refused event's hooks/<event>.toml for every
+// agent, and Claude, Codex, and Grok still use that file.
+func TestRefusedHookEvents_PostCompactIsNotRetired(t *testing.T) {
+	testenv.RequireContainer(t)
+	tmp := t.TempDir()
+	hooksPath := filepath.Join(tmp, ".factory", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{
+	  "PostCompact": [ { "hooks": [ { "type": "command", "command": "echo after" } ] } ]
+	}`
+	if err := os.WriteFile(hooksPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := generic.New(factorySpec(t), generic.Options{TargetRoot: tmp})
+	got, err := a.Ingest(adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hooks) != 0 {
+		t.Fatalf("PostCompact must not be captured, got %+v", got.Hooks)
+	}
+	refused, err := a.RefusedHookEvents(adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range refused {
+		if event == "PostCompact" {
+			t.Fatal("refusing PostCompact would delete the shared canonical hook file")
+		}
+	}
+}
+
+// TestIngest_FactoryHooks_HooksJSONWinsOverSettings pins that settings.json is
+// only the fallback for an absent hooks.json. Once hooks.json exists, Droid
+// ignores settings.json hooks, and so does import.
+func TestIngest_FactoryHooks_HooksJSONWinsOverSettings(t *testing.T) {
+	testenv.RequireContainer(t)
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".factory")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hooksBody := `{
+	  "SessionStart": [ { "hooks": [ { "type": "command", "command": "from-hooks-json", "timeout": 5 } ] } ]
+	}`
+	settingsBody := `{
+	  "hooks": {
+	    "SessionStart": [ { "hooks": [ { "type": "command", "command": "from-settings", "timeout": 9 } ] } ]
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "hooks.json"), []byte(hooksBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settingsBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := generic.New(factorySpec(t), generic.Options{TargetRoot: tmp}).Ingest(adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hooks) != 1 || got.Hooks[0].Command != "from-hooks-json" || got.Hooks[0].Timeout != 5 {
+		t.Fatalf("hooks.json must win over settings.json, got %+v", got.Hooks)
+	}
+}
+
+// TestRefusedHookEvents_ExplicitZeroTimeout pins that timeout 0 is a semantic
+// refusal. Timeout == 0 means "no timeout key", so capturing 0 and re-rendering
+// it would drop the key and silently take Droid's 60s default.
+func TestRefusedHookEvents_ExplicitZeroTimeout(t *testing.T) {
+	testenv.RequireContainer(t)
+	tmp := t.TempDir()
+	hooksPath := filepath.Join(tmp, ".factory", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{
+	  "PreToolUse": [ { "matcher": "Execute", "hooks": [ { "type": "command", "command": "echo hi", "timeout": 0 } ] } ]
+	}`
+	if err := os.WriteFile(hooksPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := generic.New(factorySpec(t), generic.Options{TargetRoot: tmp})
+	got, err := a.Ingest(adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hooks) != 0 {
+		t.Fatalf("timeout 0 must leave the event uncaptured, got %+v", got.Hooks)
+	}
+	refused, err := a.RefusedHookEvents(adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refused) != 1 || refused[0] != "PreToolUse" {
+		t.Fatalf("explicit zero must be a semantic refusal, got %v", refused)
+	}
+}
+
+func TestRender_FactoryHooks_ProjectScope(t *testing.T) {
+	testenv.RequireContainer(t)
+	home := t.TempDir()
+	project := t.TempDir()
+	a := generic.New(factorySpec(t), generic.Options{TargetRoot: home})
+	c := source.Canonical{Hooks: []source.Hook{
+		{Event: untrusted.Wrap("PreToolUse"), Matcher: "Execute", Type: "command", Command: "echo proj", Timeout: 8},
+	}}
+	ops, _, err := a.Render(secrets.ForRender(c), adapter.ScopeProject, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(project, ".factory", "hooks.json")
+	op := findOp(ops, ".factory/hooks.json")
+	if op == nil || op.Path != want {
+		t.Fatalf("project hooks path = %+v, want %s", ops, want)
+	}
+	if strings.Contains(op.Path, filepath.Join(home, ".factory")) {
+		t.Fatal("project scope wrote the user hooks file")
+	}
+	if err := a.Apply(ops, adapter.PassThroughWriter{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Ingest(adapter.ScopeProject, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hooks) != 1 || got.Hooks[0].Command != "echo proj" || got.Hooks[0].Timeout != 8 {
+		t.Fatalf("project ingest = %+v", got.Hooks)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".factory", "hooks.json")); !os.IsNotExist(err) {
+		t.Fatalf("user hooks.json should not exist, stat err=%v", err)
+	}
+}
