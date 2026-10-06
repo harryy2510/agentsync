@@ -24,6 +24,7 @@
 package generic
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,12 +116,18 @@ type Spec struct {
 	Memory    FileTarget // rules/instructions FILE path (plain markdown)
 	MCP       MCPTarget  // mcpServers JSON
 	Skills    FileTarget // Agent-Skills DIRECTORY root (holds <name>/SKILL.md subtrees); empty = unsupported
+	// Hooks is a hooks.json FILE whose root is the event map (Factory Droid).
+	// Empty means the agent has no command-hook file agentsync manages.
+	// The legacy settings.json "hooks" key is an import fallback only.
+	Hooks FileTarget
 }
 
 // Options configure a generic adapter instance.
 type Options struct {
 	TargetRoot string
 	LookPath   func(file string) (string, error)
+	// Stderr receives ingest warnings. Nil means os.Stderr.
+	Stderr io.Writer
 }
 
 // Adapter implements adapter.Adapter for one Spec.
@@ -133,6 +140,16 @@ type Adapter struct {
 func New(spec Spec, opts Options) *Adapter { return &Adapter{spec: spec, opts: opts} }
 
 func (a *Adapter) Name() string { return a.spec.Name }
+
+// SetStderr replaces the ingest warning sink. Nil restores os.Stderr.
+func (a *Adapter) SetStderr(w io.Writer) { a.opts.Stderr = w }
+
+func (a *Adapter) warn() io.Writer {
+	if a.opts.Stderr != nil {
+		return a.opts.Stderr
+	}
+	return os.Stderr
+}
 
 // KeyMergeStrategy is merge-jsonc-keys when the spec has an MCP file (the only
 // key-merge surface); otherwise "" (memory is a whole-file write). The breadth
@@ -208,6 +225,21 @@ func (a *Adapter) skillsPath(scope adapter.Scope, project string) string {
 		return ""
 	}
 	return filepath.Join(a.opts.TargetRoot, a.spec.Skills.User)
+}
+
+// hooksPath resolves the absolute hooks.json for the scope, or "" when the
+// spec does not manage hooks there.
+func (a *Adapter) hooksPath(scope adapter.Scope, project string) string {
+	if scope == adapter.ScopeProject {
+		if a.spec.Hooks.Project == "" {
+			return ""
+		}
+		return filepath.Join(project, a.spec.Hooks.Project)
+	}
+	if a.spec.Hooks.User == "" {
+		return ""
+	}
+	return filepath.Join(a.opts.TargetRoot, a.spec.Hooks.User)
 }
 
 // agentTargeted reports whether the agents allowlist includes this agent.

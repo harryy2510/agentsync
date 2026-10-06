@@ -159,7 +159,9 @@ the deep adapters use (`claude.SkillFileOps`) — bundled files and executable b
 survive byte-for-byte. Most agents read the cross-vendor **`.agents/skills/`**
 convention (the same directory Codex targets, so the render pipeline dedupes the
 byte-identical ops rather than fighting over the path); a few scan only their own
-`.<agent>/skills/` (Qwen, Junie, Kiro, Factory, Copilot's `.github/skills/`). The
+`.<agent>/skills/` (Qwen, Junie, Kiro, Copilot's `.github/skills/`). Factory
+scans the shared `.agents/skills/` directory as a compatibility source and does
+not get a second `.factory/skills/` copy (Droid rejects duplicate skill names). The
 **four without skills** are the ones that don't natively scan a `SKILL.md`
 directory: **Jules** and **Firebase Studio** *publish* skills for *other* agents,
 **Amazon Q** consumes skills only through an MCP server (a different component), and
@@ -193,9 +195,20 @@ guessed.
 | **copilot** | `.github/copilot-instructions.md` | ✓ `.vscode/mcp.json` (`servers` key, `type`) | ✓ `.github/skills/` · `~/.copilot/skills/` |
 | **copilot-cli** | `AGENTS.md` | ✓ `~/.copilot/mcp-config.json` (`type`, stdio="local") | ✓ `.agents/skills/` (+ user) |
 | **crush** | `AGENTS.md` | ✓ crush.json `mcp` key (+ user) | ✓ `.agents/skills/` · `~/.config/crush/skills/` |
-| **factory** | `AGENTS.md` | ✓ `.factory/mcp.json` · `~/.factory/mcp.json` (`type`) | ✓ `.factory/skills/` (+ user) |
+| **factory** | `AGENTS.md` · `~/.factory/AGENTS.md` | ✓ `.factory/mcp.json` · `~/.factory/mcp.json` (`type`) | ✓ `.agents/skills/` (+ user) |
 | **pi** | `AGENTS.md` · `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` | ✓ `.agents/skills/` (+ user) |
 | **mistral** | `AGENTS.md` | ✗ TOML `.vibe/config.toml` | ✓ `.agents/skills/` · `~/.vibe/skills/` |
+
+**Factory hooks** are the one breadth-tier exception to "no hooks". Droid's
+`~/.factory/hooks.json` and `.factory/hooks.json` are an event map at the file
+root (command hooks only; `timeout` is seconds, the same unit as the canonical
+field). `PostCompact` is not a Droid event and is skipped, not refused, so the
+shared `hooks/PostCompact.toml` other agents use is left alone. A group field
+Droid supports and agentsync does not (`commandRegex`) refuses that whole
+event rather than being stripped on the next apply. If `hooks.json` is absent,
+import reads the `hooks` object in the matching `settings.json`; apply writes
+`hooks.json`, which is the file Droid prefers once it exists. The legacy
+`.factory/hooks/hooks.json` path is not managed.
 
 **Deliberate exclusions:** **Aider** (no native MCP; memory only via an
 `.aider.conf.yml` `read:` pointer — needs a content+config-pointer adapter, out of
