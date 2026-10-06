@@ -30,7 +30,7 @@ nothing is dropped silently.
 | **Roo Code** | ✅ Adapter (some components projected) | MCP, memory, and slash commands — clean filesystem `.roo/` paths (rulesync and ruler converged on these). **MCP → `.roo/mcp.json`** (project-level, `mcpServers` with explicit `type: streamable-http`/`sse` for remote + `url`/`headers`; merge-by-server-name preserves foreign servers). Roo's *global* MCP lives in VS Code globalStorage (OS/editor-specific), which agentsync intentionally does **not** target — so user-scope MCP is reported as a skip. **Memory → `.roo/rules/agentsync.md`** (plain-markdown always-applied rule) and **commands → `.roo/commands/<name>.md`** (markdown + frontmatter — Roo keeps **both** `description` *and* `argument-hint`; only `allowed-tools` drops), both at **user and project scope** (`~/.roo/` + `<repo>/.roo/`). **Skills, hooks, and LSP** have no Roo concept, and Roo's "custom modes" are not per-file **subagents**, so all four are skipped. No `PluginIngester`; it still *receives* plugin-projected components on `apply`. |
 | **Cline** | ✅ Adapter (scope-asymmetric) | MCP, memory, and slash commands. **MCP → `~/.cline/mcp.json`** at **user scope** — the Cline CLI's clean config (`mcpServers`, transport inferred: stdio command/args/env, remote `url` + `headers`). Cline has no project MCP file, and its VS Code-extension MCP lives in OS/editor-specific globalStorage no config-sync tool writes, so project-scope MCP is reported as a skip. **Memory → `.clinerules/agentsync.md`** (plain markdown — Cline concatenates `.clinerules/`) and **commands → `.clinerules/workflows/<name>.md`** (plain markdown workflows invoked as `/<name>.md`; command frontmatter drops), both at **project scope** (Cline's global rules and workflows live in `~/Documents/Cline/`, a non-XDG app path agentsync deliberately does not target). **Skills, subagents, hooks, and LSP** have no Cline concept and are skipped. No `PluginIngester`; it still *receives* plugin-projected components on `apply`. |
 | **Grok Build** | ✅ Dedicated adapter | User/project instructions, skills with bundled files, legacy Markdown commands, TOML MCP, and JSON command hooks. Import captures the managed hook file only; unsupported handler fields are refused. See [Grok support](grok.md) for paths, trust requirements, verified upstream contracts, and limitations. |
-| **Breadth tier (22 agents)** | ✅ Generic adapter (memory + MCP + skills) | A long tail of agents supported by one data-driven [generic adapter](#breadth-tier) — **memory** (rules file) for all, **MCP** where the agent reads a JSON server-map agentsync can express (15 of 22), and **Agent Skills** where the agent natively scans a `SKILL.md` directory (18 of 22). Each is a *verified* spec, not a hand-written package; see the [Breadth tier](#breadth-tier) table for per-agent coverage. They flow through the normal apply/import pipeline (drift, secrets, capture), unlike a one-way rules dump. |
+| **Breadth tier (22 agents)** | ✅ Generic adapter (memory + MCP + skills; Factory hooks) | A long tail of agents supported by one data-driven [generic adapter](#breadth-tier) — **memory** (rules file) for all, **MCP** where the agent reads a JSON server-map agentsync can express (15 of 22), and **Agent Skills** where the agent natively scans a `SKILL.md` directory (18 of 22). **Factory** is the one row with command hooks. Each is a *verified* spec, not a hand-written package; see the [Breadth tier](#breadth-tier) table for per-agent coverage. They flow through the normal apply/import pipeline (drift, secrets, capture), unlike a one-way rules dump. |
 
 ## Plugin import/apply: the shared invariant
 
@@ -161,7 +161,8 @@ convention (the same directory Codex targets, so the render pipeline dedupes the
 byte-identical ops rather than fighting over the path); a few scan only their own
 `.<agent>/skills/` (Qwen, Junie, Kiro, Copilot's `.github/skills/`). Factory
 scans the shared `.agents/skills/` directory as a compatibility source and does
-not get a second `.factory/skills/` copy (Droid rejects duplicate skill names). The
+not get a second `.factory/skills/` copy. Droid overrides a cross-source name
+clash rather than rejecting it; one copy is still the right render. The
 **four without skills** are the ones that don't natively scan a `SKILL.md`
 directory: **Jules** and **Firebase Studio** *publish* skills for *other* agents,
 **Amazon Q** consumes skills only through an MCP server (a different component), and
@@ -206,9 +207,15 @@ field). `PostCompact` is not a Droid event and is skipped, not refused, so the
 shared `hooks/PostCompact.toml` other agents use is left alone. A group field
 Droid supports and agentsync does not (`commandRegex`) refuses that whole
 event rather than being stripped on the next apply. If `hooks.json` is absent,
-import reads the `hooks` object in the matching `settings.json`; apply writes
-`hooks.json`, which is the file Droid prefers once it exists. The legacy
-`.factory/hooks/hooks.json` path is not managed.
+import reads the `hooks` object in the matching `settings.json`. The first apply
+that creates `hooks.json` copies that object in as the merge base, then overlays
+only the events agentsync is rendering, so a `commandRegex` group or any other
+unmodeled sibling keeps running after Droid stops reading `settings.json`. Those
+copied events are not recorded as owned, so a later apply does not orphan-delete
+them. The legacy `.factory/hooks/hooks.json` path still loads beside `hooks.json`
+until Droid's next save archives it to `hooks/hooks.migrated.json`; apply warns
+and does not move it. Import retirement disowns Factory's `/<event>` state
+pointer, not only the `/hooks/<event>` spelling the nested adapters use.
 
 **Deliberate exclusions:** **Aider** (no native MCP; memory only via an
 `.aider.conf.yml` `read:` pointer — needs a content+config-pointer adapter, out of

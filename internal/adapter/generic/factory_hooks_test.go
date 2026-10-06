@@ -16,6 +16,29 @@ import (
 	"github.com/spxrogers/agentsync/internal/untrusted"
 )
 
+func factoryRegistered(t *testing.T, opts generic.Options) (adapter.Adapter, adapter.HookIngestGuard) {
+	t.Helper()
+	a := generic.Register(factorySpec(t), opts)
+	g, ok := a.(adapter.HookIngestGuard)
+	if !ok {
+		t.Fatal("factory registry value must implement HookIngestGuard")
+	}
+	return a, g
+}
+
+func TestRegister_OnlyFactoryImplementsHookGuard(t *testing.T) {
+	for _, spec := range generic.Specs() {
+		a := generic.Register(spec, generic.Options{})
+		_, ok := a.(adapter.HookIngestGuard)
+		if spec.Name == "factory" && !ok {
+			t.Fatal("factory must implement HookIngestGuard")
+		}
+		if spec.Name != "factory" && ok {
+			t.Fatalf("%s implements HookIngestGuard; only a spec that declares hooks may", spec.Name)
+		}
+	}
+}
+
 func factorySpec(t *testing.T) generic.Spec {
 	t.Helper()
 	for _, s := range generic.Specs() {
@@ -25,6 +48,67 @@ func factorySpec(t *testing.T) generic.Spec {
 	}
 	t.Fatal("factory spec missing")
 	return generic.Spec{}
+}
+
+func TestRefusedHookEvents_RequiresProjectRoot(t *testing.T) {
+	_, g := factoryRegistered(t, generic.Options{})
+	if _, err := g.RefusedHookEvents(adapter.ScopeProject, ""); err == nil {
+		t.Fatal("project scope with an empty root must be rejected")
+	}
+}
+
+func TestApply_FactoryHooks_SeedsSettingsWhenHooksJSONAbsent(t *testing.T) {
+	testenv.RequireContainer(t)
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".factory")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{
+	  "hooksDisabled": false,
+	  "hooks": {
+	    "PreToolUse": [ { "matcher": "Execute", "commandRegex": "^git ", "hooks": [ { "type": "command", "command": "echo audit" } ] } ],
+	    "Stop": [ { "matcher": "", "hooks": [ { "type": "command", "command": "echo stop" } ] } ]
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := generic.New(factorySpec(t), generic.Options{TargetRoot: tmp})
+	c := source.Canonical{Hooks: []source.Hook{
+		{Event: untrusted.Wrap("SessionStart"), Type: "command", Command: "echo session"},
+	}}
+	ops, _, err := a.Render(secrets.ForRender(c), adapter.ScopeUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hooksOp *adapter.FileOp
+	for i := range ops {
+		if strings.HasSuffix(ops[i].Path, "hooks.json") {
+			hooksOp = &ops[i]
+		}
+	}
+	if hooksOp == nil {
+		t.Fatal("no hooks.json op")
+	}
+	if strings.Contains(string(hooksOp.Content), "commandRegex") || strings.Contains(string(hooksOp.Content), "echo audit") {
+		t.Fatalf("settings hooks leaked into op.Content and would be recorded as owned:\n%s", hooksOp.Content)
+	}
+	for i := 0; i < 2; i++ {
+		if err := a.Apply(ops, adapter.PassThroughWriter{}); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "hooks.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for _, want := range []string{"commandRegex", "echo audit", "echo stop", "echo session"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("apply %d dropped %q from hooks.json:\n%s", i+1, want, text)
+			}
+		}
+	}
 }
 
 func TestRender_Factory_UserMemory(t *testing.T) {
@@ -151,7 +235,7 @@ func TestIngest_FactoryHooks_CommandRegexRefusesEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var warn bytes.Buffer
-	a := generic.New(factorySpec(t), generic.Options{TargetRoot: tmp, Stderr: &warn})
+	a, g := factoryRegistered(t, generic.Options{TargetRoot: tmp, Stderr: &warn})
 	got, err := a.Ingest(adapter.ScopeUser, "")
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +243,7 @@ func TestIngest_FactoryHooks_CommandRegexRefusesEvent(t *testing.T) {
 	if len(got.Hooks) != 0 {
 		t.Fatalf("commandRegex must leave the event uncaptured, got %+v", got.Hooks)
 	}
-	refused, err := a.RefusedHookEvents(adapter.ScopeUser, "")
+	refused, err := g.RefusedHookEvents(adapter.ScopeUser, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +272,7 @@ func TestRefusedHookEvents_PostCompactIsNotRetired(t *testing.T) {
 	if err := os.WriteFile(hooksPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a := generic.New(factorySpec(t), generic.Options{TargetRoot: tmp})
+	a, g := factoryRegistered(t, generic.Options{TargetRoot: tmp})
 	got, err := a.Ingest(adapter.ScopeUser, "")
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +280,7 @@ func TestRefusedHookEvents_PostCompactIsNotRetired(t *testing.T) {
 	if len(got.Hooks) != 0 {
 		t.Fatalf("PostCompact must not be captured, got %+v", got.Hooks)
 	}
-	refused, err := a.RefusedHookEvents(adapter.ScopeUser, "")
+	refused, err := g.RefusedHookEvents(adapter.ScopeUser, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +340,7 @@ func TestRefusedHookEvents_ExplicitZeroTimeout(t *testing.T) {
 	if err := os.WriteFile(hooksPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a := generic.New(factorySpec(t), generic.Options{TargetRoot: tmp})
+	a, g := factoryRegistered(t, generic.Options{TargetRoot: tmp})
 	got, err := a.Ingest(adapter.ScopeUser, "")
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +348,7 @@ func TestRefusedHookEvents_ExplicitZeroTimeout(t *testing.T) {
 	if len(got.Hooks) != 0 {
 		t.Fatalf("timeout 0 must leave the event uncaptured, got %+v", got.Hooks)
 	}
-	refused, err := a.RefusedHookEvents(adapter.ScopeUser, "")
+	refused, err := g.RefusedHookEvents(adapter.ScopeUser, "")
 	if err != nil {
 		t.Fatal(err)
 	}
