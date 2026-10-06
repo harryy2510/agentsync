@@ -104,15 +104,32 @@ func (a *Adapter) ingestHooks(scope adapter.Scope, project string) ([]source.Hoo
 	return hooks, err
 }
 
+// hookedAdapter is what the registry stores for a spec that declares hooks.
+// The method is on this type, not *Adapter, so the other breadth agents do
+// not implement HookIngestGuard. Import's type assert would otherwise treat
+// all 22 as hook guards, and the registry contract test would try to enrich
+// a hooks file none of them write.
+type hookedAdapter struct{ *Adapter }
+
 // RefusedHookEvents implements adapter.HookIngestGuard. Only Factory-documented
 // events are refused; an unsupported event must not retire the shared
 // canonical file.
-func (a *Adapter) RefusedHookEvents(scope adapter.Scope, project string) ([]string, error) {
-	if a.hooksPath(scope, project) == "" {
-		return nil, nil
+func (a *hookedAdapter) RefusedHookEvents(scope adapter.Scope, project string) ([]string, error) {
+	if err := adapter.RequireProjectRoot(scope, project); err != nil {
+		return nil, err
 	}
 	_, refused, err := a.readFactoryHooks(scope, project, io.Discard)
 	return refused, err
+}
+
+// Register returns the value the CLI registry stores. Specs that declare a
+// hooks file are wrapped so only they implement HookIngestGuard.
+func Register(spec Spec, opts Options) adapter.Adapter {
+	a := New(spec, opts)
+	if spec.Hooks.User == "" && spec.Hooks.Project == "" {
+		return a
+	}
+	return &hookedAdapter{Adapter: a}
 }
 
 func (a *Adapter) readFactoryHooks(scope adapter.Scope, project string, warn io.Writer) ([]source.Hook, []string, error) {
@@ -130,7 +147,7 @@ func (a *Adapter) readFactoryHooks(scope adapter.Scope, project string, warn io.
 		if err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", path, err)
 		}
-	} else if doc, err = a.settingsHooks(scope, project); err != nil {
+	} else if doc, err = a.settingsHooks(scope, project, warn); err != nil {
 		return nil, nil, err
 	}
 	if doc == nil {
@@ -142,7 +159,7 @@ func (a *Adapter) readFactoryHooks(scope adapter.Scope, project string, warn io.
 
 // settingsHooks reads the hooks object from settings.json beside hooks.json.
 // A missing file or a missing hooks key is "no hooks", not an error.
-func (a *Adapter) settingsHooks(scope adapter.Scope, project string) (map[string]any, error) {
+func (a *Adapter) settingsHooks(scope adapter.Scope, project string, warn io.Writer) (map[string]any, error) {
 	hooksFile := a.hooksPath(scope, project)
 	if hooksFile == "" {
 		return nil, nil
@@ -165,7 +182,7 @@ func (a *Adapter) settingsHooks(scope adapter.Scope, project string) (map[string
 	}
 	hooks, ok := raw.(map[string]any)
 	if !ok {
-		fmt.Fprintf(a.warn(), "warning: %s hooks value is not an object; hooks not captured\n", settings)
+		fmt.Fprintf(warn, "warning: %s hooks value is not an object; hooks not captured\n", settings)
 		return nil, nil
 	}
 	return hooks, nil

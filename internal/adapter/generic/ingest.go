@@ -13,8 +13,8 @@ import (
 )
 
 // Ingest reads this breadth-tier agent's memory, MCP, and skills back into a
-// partial canonical. Inverse of Render (memory + MCP + skills; the components the
-// tier never projects are simply not read).
+// partial canonical, plus hooks when the spec declares a hooks file (Factory).
+// Inverse of Render. Components the tier never projects are simply not read.
 func (a *Adapter) Ingest(scope adapter.Scope, project string) (source.Canonical, error) {
 	if err := adapter.RequireProjectRoot(scope, project); err != nil {
 		return source.Canonical{}, err

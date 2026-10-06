@@ -8,11 +8,15 @@
 // The DEEP adapters (claude, codex, cursor, gemini, opencode, continuedev,
 // windsurf, roo, cline) are NOT generic — they have richer, agent-specific
 // component support (subagents, commands, hooks, …) and bidirectional nuances
-// that don't fit a table. The generic tier deliberately covers memory, MCP, and
-// Agent Skills (the open SKILL.md spec, where the agent natively scans a skills
-// directory), and reports every other component as a skip, so its coverage is
-// never overstated. Skills fit the table because their on-disk format is uniform
-// across agents — only the scanned directory varies, with no dialect to model.
+// that don't fit a table. The generic tier covers memory, MCP, and Agent Skills
+// (the open SKILL.md spec, where the agent natively scans a skills directory),
+// and reports every other component as a skip, so its coverage is never
+// overstated. Factory Droid is the one exception: its spec declares a hooks.json,
+// and Register wraps that adapter so only it implements HookIngestGuard. The
+// hook dialect (root event map, Droid's event list, settings.json fallback) is
+// Factory's. Setting Hooks on another spec would inherit that dialect, which is
+// not a generic knob. Skills fit the table because their on-disk format is
+// uniform across agents — only the scanned directory varies, with no dialect to model.
 // Breadth-tier agents still flow through agentsync's normal apply/import
 // pipeline, so they inherit drift detection, secret resolution, and capture —
 // which a one-way "rules dump" (ruler/rulesync) does not provide.

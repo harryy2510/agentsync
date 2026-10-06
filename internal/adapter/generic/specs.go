@@ -90,10 +90,11 @@ func Specs() []Spec {
 		// Factory Droid: AGENTS.md (project + personal ~/.factory/AGENTS.md, per
 		// docs.factory.ai/cli/configuration/agents-md); MCP `.factory/mcp.json`
 		// with explicit `type`. Skills use the shared `.agents/skills` dir, which
-		// Droid scans as a compatibility source (docs.factory.ai/cli/configuration/skills):
-		// writing `.factory/skills` as well would register every skill twice
-		// whenever another `.agents/skills` agent (e.g. codex) is enabled, and
-		// Droid treats same-bucket duplicate names as invalid configuration.
+		// Droid scans as a compatibility source next to its own `.factory/skills`
+		// (docs.factory.ai/cli/configuration/skills). Writing both would register
+		// every skill in two sources. Cross-source name clashes are overridden,
+		// not rejected; agentsync still writes only the shared directory so a
+		// machine that also enables Codex does not get two copies.
 		// Hooks are ~/.factory/hooks.json and .factory/hooks.json (event map at
 		// the root, timeout in seconds). docs.factory.ai/reference/hooks-reference.
 		// The legacy .factory/hooks/hooks.json path still loads in Droid but is
