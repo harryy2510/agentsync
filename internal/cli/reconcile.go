@@ -369,10 +369,13 @@ func newReconcileSession(cmd *cobra.Command, in io.Reader, auto reconcileAuto, a
 		return nil, nil, err
 	}
 	reg := registryFactory()
-	agents, enabled := enabledAgentNames(c.Config)
+	allEnabled, enabled := enabledAgentNames(c.Config)
 	// --agents narrows the pass, with the same parsing status/diff/apply use.
-	if len(agents) > 0 {
-		sel, aerr := selectAgents(cmd, agents, enabled, agentsCSV)
+	// Only the selected agents are rendered; a path an unselected agent owns
+	// in state is still never offered as an orphan (#246).
+	agents := allEnabled
+	if len(allEnabled) > 0 {
+		sel, aerr := selectAgents(cmd, allEnabled, enabled, agentsCSV)
 		if aerr != nil {
 			return nil, nil, aerr
 		}
@@ -384,6 +387,7 @@ func newReconcileSession(cmd *cobra.Command, in io.Reader, auto reconcileAuto, a
 	if err != nil {
 		return nil, nil, err
 	}
+	plan = plan.WithSiblingOwners(st, userHome, sc, projectRoot, agentsLeftOut(allEnabled, agents))
 
 	// Collect all items in order, then append orphaned whole-file dests
 	// (owned in state, no longer rendered) for interactive delete/keep.
@@ -925,27 +929,11 @@ func pluginOwnerForKeyItem(sourceID, ptr string, owners map[string]string) strin
 // pluginOwners (pluginProvidedSourceIDs) tags each item whose component comes
 // from a plugin, so write-back can refuse it.
 //
-// The walk's orphan set is per agent and unfiltered; reconcile narrows it: a
-// path that ANY enabled agent still renders is excluded — never offer to
-// delete a file another agent depends on (the shared-skill case) — and the
-// rest is deduped by path so a file owned by two agents is prompted once.
+// The walk already drops a path another agent holds (the plan's shared-dest
+// keep-set: this run's writes plus what agents --agents left out own in
+// state). Reconcile only dedupes what remains, so a file owned by two agents
+// is prompted once.
 func collectReconcileItems(plan render.RenderPlan, reg *adapter.Registry, s *state.Targets, sc adapter.Scope, projectRoot, userHome string, pluginOwners map[string]string) (items, orphans []reconcileItem) {
-	rendered := map[string]bool{}
-	for _, name := range reg.Names() {
-		res, ok := plan.PerAgent[name]
-		if !ok {
-			continue
-		}
-		for _, op := range res.Ops {
-			if op.Action != adapter.ActionWrite {
-				continue
-			}
-			if render.IsKeyMerge(op.MergeStrategy) {
-				continue
-			}
-			rendered[op.Path] = true
-		}
-	}
 	seen := map[string]bool{}
 	walk := planWalk{
 		plan: plan, agents: reg.Names(), state: s, userHome: userHome, scope: sc, projectRoot: projectRoot,
@@ -966,7 +954,7 @@ func collectReconcileItems(plan render.RenderPlan, reg *adapter.Registry, s *sta
 			orphan:      it.orphan,
 		}
 		if it.orphan {
-			if rendered[it.op.Path] || seen[it.op.Path] {
+			if seen[it.op.Path] {
 				continue
 			}
 			seen[it.op.Path] = true
@@ -1468,13 +1456,15 @@ func (s *reconcileSession) writeBackKeyItem(it reconcileItem) error {
 // mid-prompt with a keystroke to choose, and "not a regular file" alone does
 // not say which one gets them unstuck.
 //
-// The next step deliberately omits [o]verride for a NON-REGULAR destination.
-// Override re-applies through render.Writer.Write, whose convergence read is
-// not shape-guarded, so on that exact item it does not fail — it HANGS
-// (measured: `reconcile --auto-override` rc=124, #241). An earlier version of
-// the whole-file message recommended it, which walked the user out of a clean
-// refusal and into an unbounded wedge; restore the suggestion only once #241
-// is fixed. Every other read failure keeps the peers' remedy set: the common
+// The next step still omits [o]verride for a NON-REGULAR destination, but the
+// REASON has changed and the wording should not be read as the old one.
+// Override re-applies through render.Writer.Write, which used to hang on that
+// exact item because its convergence read was not shape-guarded (measured:
+// `reconcile --auto-override` rc=124, #241). It is guarded now and REFUSES
+// instead, so recommending [o] would no longer wedge — it would simply hand
+// the user a second refusal for the same reason they already got one.
+// "Remove or replace the file" remains the only step that actually unsticks
+// them. Every other read failure keeps the peers' remedy set: the common
 // one is an ABSENT destination — the user deleted a managed file, which is
 // itself drift — and there [o]verride is both safe and usually the fix, since
 // Writer.Write's convergence read gets ENOENT and falls straight through to

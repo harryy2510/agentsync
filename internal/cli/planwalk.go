@@ -39,10 +39,9 @@ type planItem struct {
 	ptr string
 
 	// orphan marks a whole-file destination owned in state that this agent no
-	// longer renders. The set is PER AGENT and UNFILTERED: a path another
-	// enabled agent still renders IS yielded (status's ownership view).
-	// reconcile applies its own cross-agent exclusion and path dedupe on top —
-	// see collectReconcileItems.
+	// longer renders AND that no other agent holds: none in this run writes
+	// it, and no enabled agent left out of --agents owns it in state
+	// (render.SharedDests). reconcile only dedupes what this walk already kept.
 	orphan bool
 
 	// cls is the CONTENT-only classification. It deliberately does NOT fold in
@@ -160,7 +159,8 @@ type planWalk struct {
 	matchOp func(agent string, op adapter.FileOp) bool
 
 	// includeOrphans appends each agent's render.OrphanFiles items AFTER that
-	// agent's op items, unfiltered (see planItem.orphan).
+	// agent's op items. OrphanFiles already drops a path another agent holds
+	// (see planItem.orphan).
 	includeOrphans bool
 
 	// withText populates srcText/dstText. It governs THOSE FIELDS ONLY:
@@ -209,6 +209,10 @@ func walkPlanItems(w planWalk) []planItem {
 		readDest = readDestFile
 	}
 	var out []planItem
+	// The same shared-dest rule apply uses (#246): a path another enabled
+	// agent still renders is not an orphan, so status/diff must not offer a
+	// deletion apply will never perform.
+	sharedDests := render.NewSharedDests(w.plan, w.userHome)
 	for _, name := range w.agents {
 		res, ok := w.plan.PerAgent[name]
 		if !ok {
@@ -273,7 +277,7 @@ func walkPlanItems(w planWalk) []planItem {
 		if !w.includeOrphans {
 			continue
 		}
-		for _, orphan := range render.OrphanFiles(w.state, w.userHome, name, w.scope, w.projectRoot, res.Ops) {
+		for _, orphan := range render.OrphanFiles(w.state, w.userHome, name, w.scope, w.projectRoot, res.Ops, sharedDests) {
 			entry := w.state.Files[stateFileKey(w.userHome, name, w.scope, w.projectRoot, orphan)]
 			perm, reg := destModePerm(orphan)
 			it := planItem{

@@ -1048,7 +1048,22 @@ run itself continues, because a lingering orphan is not data loss while a failed
 apply would wedge every other agent's writes. A skipped delete is **retried**:
 `PruneStaleState` keeps the state entry for a reclaimable destination that is
 still on disk, so the next apply tries again and warns again rather than
-forgetting the file forever. Empty-directory pruning applies to **skills
+forgetting the file forever. A path another agent **holds** is not an orphan
+at all (#246): `apply` skips the delete, and `PruneStaleState` releases the
+dropping agent's state entry so `status` does not keep offering a deletion that
+will never run. "Holds" means one of two things, collected into
+`render.SharedDests`: an agent in this run's plan writes the path, or an
+enabled agent that `--agents` left out of the run already owns it in state
+(`RenderPlan.WithSiblingOwners` — the same rule `agent disable --purge` uses to
+keep a shared file). Two consequences are deliberate. Unselected agents are
+**not rendered**, so one of them failing to render cannot fail an `--agents`
+run, including `status`. And the test is **ownership, not "would render"**: an
+agent that has never applied owns nothing, so it cannot keep a path alive on
+another agent's behalf — otherwise the dropper releases its entry, nothing
+tracks the file, and once that agent is disabled it is never reclaimed. Only
+agents absent from the run are read from state; a full apply reads none, so an
+entry every agent has stopped rendering is still reclaimed.
+Empty-directory pruning applies to **skills
 only** — a skill is a directory under the Agent Skills spec, so removal must
 reclaim the whole tree, pruned up to but never including the agent's skills root;
 subagents and commands are flat files in a directory the agent always owns.
@@ -1084,8 +1099,8 @@ fold permission drift into the class of a content-clean whole file — measured
 against `op.Mode`, the mode the next apply chmods to, which is the same question
 `diff`'s `mode` hunk asks (`planItem.opModeDrifted`, one predicate behind all
 three, so they cannot disagree). `reconcile` still ignores mode entirely; that gap is
-#245. `diff` masks and compares text, `reconcile` excludes
-an orphan another agent still renders, `explain` groups by owner.
+#245. `diff` masks and compares text, `reconcile` dedupes the orphans the walk
+already excluded (a path any enabled agent still renders), `explain` groups by owner.
 
 A **symlinked** destination is read through only when
 `AGENTSYNC_ALLOW_SYMLINK_DEST=1` — the same switch under which `iox.AtomicWrite`
@@ -1098,8 +1113,10 @@ destination (`drift`, or `conflict`/`foreign-collision` by its usual table);
 `diff` prints a `symlink` hunk naming the switch rather than reading through and
 reporting no difference; `reconcile` shows the SHA display instead of a text
 diff, and its `[w]`rite-back refuses to capture through the link with advice
-that omits `[o]verride` (#248: `Writer.Write`'s mode arm chmods through a link
-before the policy is consulted). Set, all four resolve the link and compare the
+that omits `[o]verride` (that omission now reflects a clean REFUSAL rather than
+a hazard: `Writer.Write`'s mode arm used to chmod through the link before the
+policy was consulted, and since #248 it resolves through
+`iox.ResolveSymlinkDest` like every other write). Set, all four resolve the link and compare the
 file it points at, so a converged chezmoi setup reports `clean`; a link that
 does not resolve answers a second sentinel so the advice is "fix the link", not
 "set the switch". A link to a FIFO, device or directory is a shape problem the

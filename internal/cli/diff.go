@@ -116,7 +116,8 @@ func diffRun(cmd *cobra.Command, args []string, o diffOpts) error {
 	// diff renders the TEMPLATED canonical (it masks the destination's
 	// resolved cleartext separately, below); wrap as a render-only
 	// Resolved without substituting so it works even when the secrets
-	// backend is locked.
+	// backend is locked. diff never walks orphans, so it needs no
+	// shared-destination keep-set and renders only the selected agents.
 	plan, err := render.Plan(secrets.ForRender(c), reg, selected, sc, projectRoot, s, userHome)
 	if err != nil {
 		return err

@@ -38,7 +38,7 @@ import (
 // even when the plan no longer renders it. apply skips (rather than performs) an
 // orphan delete it cannot read first, and pruning the entry would make that skip
 // permanent and silent — see the comment at the check itself.
-func PruneStaleState(s *state.Targets, userHome, agent string, scope adapter.Scope, project string, ops []adapter.FileOp) {
+func PruneStaleState(s *state.Targets, userHome, agent string, scope adapter.Scope, project string, ops []adapter.FileOp, shared SharedDests) {
 	if s == nil {
 		return
 	}
@@ -80,6 +80,21 @@ func PruneStaleState(s *state.Targets, userHome, agent string, scope adapter.Sco
 			continue
 		}
 		if _, ok := currentFiles[key.Path]; ok {
+			continue
+		}
+		// Release a destination another agent now holds. apply skips its
+		// delete (#246) when an agent in this run writes the path or an enabled
+		// agent left out of the run owns it in state, so retaining this
+		// agent's entry would retain it forever: the Lstat below always finds
+		// the file, the entry is never pruned, and `status` reports an orphan
+		// every run, leaving `status --exit-code` non-zero after a clean
+		// apply. The other agent's entry tracks the file from here on.
+		//
+		// The condition is ownership, never "would render": releasing on
+		// behalf of an agent that has not written the file yet would leave it
+		// tracked by nobody (see RenderPlan.WithSiblingOwners).
+		if shared.keepsPortable(key.Path) {
+			delete(s.Files, key)
 			continue
 		}
 		// Keep tracking a reclaimable destination that is STILL ON DISK.
@@ -129,9 +144,14 @@ func PruneStaleState(s *state.Targets, userHome, agent string, scope adapter.Sco
 // OWNS in state as whole-file (replace-strategy) entries but the current plan's
 // ops no longer render — i.e. the source component was removed since the last
 // apply. The same detection PruneStaleState uses, surfaced so diagnostics
-// (status/diff/reconcile) can report a dest the next apply would prune instead
+// (status/reconcile) can report a dest the next apply would prune instead
 // of falsely reporting "clean". Returns absolute paths, sorted.
-func OrphanFiles(s *state.Targets, userHome, agent string, scope adapter.Scope, project string, ops []adapter.FileOp) []string {
+//
+// shared excludes destinations another agent holds — one in this run writes
+// it, or one left out of an --agents run owns it in state. apply keeps those
+// (#246), so reporting them as orphans would promise a deletion that never
+// comes and keep `status --exit-code` non-zero forever.
+func OrphanFiles(s *state.Targets, userHome, agent string, scope adapter.Scope, project string, ops []adapter.FileOp, shared SharedDests) []string {
 	if s == nil {
 		return nil
 	}
@@ -152,9 +172,13 @@ func OrphanFiles(s *state.Targets, userHome, agent string, scope adapter.Scope, 
 		if !key.InTree(agent, scopeName, portableProject) {
 			continue
 		}
-		if _, ok := current[key.Path]; !ok {
-			out = append(out, key.AbsPath(userHome))
+		if _, ok := current[key.Path]; ok {
+			continue
 		}
+		if shared.keepsPortable(key.Path) {
+			continue
+		}
+		out = append(out, key.AbsPath(userHome))
 	}
 	sort.Strings(out)
 	return out
@@ -237,6 +261,94 @@ func isOrphanReclaimable(sourceID string) bool {
 // Apply remains the sole executor (and dedups these across agents itself).
 func OrphanDeletes(s *state.Targets, userHome, agent string, scope adapter.Scope, project string, ops []adapter.FileOp) []adapter.FileOp {
 	return orphanDeletes(s, userHome, agent, scope, project, ops)
+}
+
+// SharedDests is the set of whole-file destinations that must not be treated
+// as stale this run, keyed HOME-relative like state file keys. A path is in it
+// when an agent in this run's plan writes it, or when an enabled agent that
+// --agents left out of the run already owns it in state (see
+// RenderPlan.WithSiblingOwners).
+//
+// It exists because orphan detection is per-agent but ownership is not: when
+// claude and opencode both render ~/.agents/skills/x/SKILL.md and opencode
+// stops, that path is not stale — it changed owner (#246). Every consumer of
+// that fact must use the SAME rule or they disagree with each other:
+//
+//   - applyPlan skips the delete, so the file survives;
+//   - PruneStaleState releases the dropping agent's state entry, because an
+//     entry whose delete will never run would otherwise be retained forever.
+//     Membership here is exactly the release condition: another agent owns
+//     the path in state, or an agent in this run writes it — so the file
+//     never ends up with no owner;
+//   - OrphanFiles omits it, so `status` and `reconcile` stop offering a
+//     deletion that apply will never perform;
+//   - the apply summary's removal counts agree with what actually happens.
+//     The git-backup baseline stays unfiltered on purpose: a kept delete is
+//     already in the plan as a write, and baselining one extra path is harmless.
+//
+// Passing the plan-derived set explicitly, rather than each caller recomputing
+// it, is what keeps those four honest with one another.
+type SharedDests struct {
+	keep     map[string]struct{}
+	userHome string
+}
+
+// NewSharedDests collects the whole-file destinations the agents in p write,
+// plus the ones p recorded as owned by enabled agents absent from the run.
+// Key-merge ops are excluded: they are owned per JSON pointer, not per file,
+// and are never orphan-deleted as whole files.
+func NewSharedDests(p RenderPlan, userHome string) SharedDests {
+	keep := make(map[string]struct{}, len(p.siblingOwned))
+	for path := range p.siblingOwned {
+		keep[path] = struct{}{}
+	}
+	for _, res := range p.PerAgent {
+		for _, op := range res.Ops {
+			if op.Action != adapter.ActionWrite {
+				continue
+			}
+			if IsKeyMerge(op.MergeStrategy) {
+				continue
+			}
+			keep[paths.HomeRelative(userHome, op.Path)] = struct{}{}
+		}
+	}
+	return SharedDests{keep: keep, userHome: userHome}
+}
+
+// Keeps reports whether the absolute destination path must not be treated as
+// stale this run.
+func (d SharedDests) Keeps(path string) bool {
+	return d.keepsPortable(paths.HomeRelative(d.userHome, path))
+}
+
+// keepsPortable is Keeps for an already HOME-relative state key path.
+func (d SharedDests) keepsPortable(portable string) bool {
+	if len(d.keep) == 0 {
+		return false
+	}
+	_, ok := d.keep[portable]
+	return ok
+}
+
+// FilterDeletes drops deletes for paths the set keeps.
+// apply and the removal counts call this rather than re-deriving the rule.
+// The git-backup baseline does not: it wants every path that might change.
+//
+// The result is a fresh slice. Filtering in place over the caller's backing
+// array is a surprising side effect in an exported API.
+func (d SharedDests) FilterDeletes(dels []adapter.FileOp) []adapter.FileOp {
+	if len(d.keep) == 0 {
+		return dels
+	}
+	out := make([]adapter.FileOp, 0, len(dels))
+	for _, del := range dels {
+		if d.Keeps(del.Path) {
+			continue
+		}
+		out = append(out, del)
+	}
+	return out
 }
 
 // orphanDeletes returns delete FileOps for files this agent owns in state —

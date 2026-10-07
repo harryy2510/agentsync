@@ -507,9 +507,14 @@ symmetric with the dest→source write boundary (see architecture §7).
   synced/would-change verdict); `Writer`
   (`NewWriter`/`NewPreviewWriter`); `TranslationReport` (`PrintText`/`PrintJSON`);
   `BuildReport`; `RecordOpsState`; `PruneStaleState`;
+  `RenderPlan.WithSiblingOwners` (records what enabled agents left out of an
+  `--agents` run own in state, without rendering them); `NewSharedDests`
+  (whole-file destinations another agent holds: written this run, or owned by
+  an agent left out of it);
   `BackupFile`/`PruneBackups`; `CollisionReport`; and the orphan-reclamation
-  trio — `OrphanFiles` (what state owns but the plan no longer renders),
-  `OrphanDeletes` (the deletes apply will perform), `OrphanIsReclaimable` (is
+  trio — `OrphanFiles` (what state owns but no other agent holds),
+  `OrphanDeletes` (the per-agent deletes, filtered through `SharedDests` before
+  apply performs them), `OrphanIsReclaimable` (is
   this component KIND reclaimed at all — drives reconcile's prompt wording) and
   `OrphanDeleteWillProceed` (will THIS destination actually be removed on this
   run — keeps the apply summary from counting a skipped delete). `IsRegularOrAbsent`
@@ -520,11 +525,15 @@ symmetric with the dest→source write boundary (see architecture §7).
   bare `os.ReadFile(op.Path)` anywhere under `internal/cli` — a two-spelling
   text matcher, so it catches the copy-paste that happened rather than every
   possible spelling.
-  It is **not** yet true of this package's own `Writer.Write` convergence read
-  or of the adapter `Ingest` paths, so `apply`, `apply --dry-run`,
-  `reconcile --auto-override` (which re-applies through `Writer.Write`),
-  `import <agent>` and `doctor` (through its plugin check) still block on a
-  non-regular destination — issues #241 and #242.
+  It is now also true of this package's own `Writer.Write` convergence read
+  (which shape-checks before `ReadFile`) and of the adapter `Ingest` paths
+  (which read through `adapter.ReadFileOptional` / `ReadDirOptional`), so
+  `apply`, `apply --dry-run`, `reconcile --auto-override` (which re-applies
+  through `Writer.Write`), `import <agent>` and `doctor` (through its plugin
+  check) all RETURN on a non-regular destination instead of blocking in
+  `open(2)` — issues #241 and #242.
+  `TestCommandsDoNotHangOnNonRegularDestination` (`internal/cli`) drives every
+  one of those commands against a real FIFO destination under a time bound.
 - **Depends on:** adapter, secrets, source, state, paths, iox.
 - **Files:** `pipeline.go`, `writer.go`, `state_apply.go`, `report.go`.
 

@@ -25,6 +25,57 @@ import (
 // selected adapter. PerAgent[name] is the per-agent breakdown.
 type RenderPlan struct {
 	PerAgent map[string]AgentResult
+	// siblingOwned is the HOME-relative whole-file destinations that enabled
+	// agents LEFT OUT of this run (by --agents) already own in state. Nil for a
+	// run over every enabled agent. Set only by WithSiblingOwners.
+	siblingOwned map[string]struct{}
+}
+
+// WithSiblingOwners records which whole-file destinations the enabled agents
+// this run did NOT select already own in state, so an --agents run neither
+// deletes nor reports as an orphan a path one of them still holds (#246).
+//
+// It reads STATE instead of rendering the unselected agents. An earlier version
+// rendered every enabled agent and then cut the plan down, which was wrong in
+// two ways:
+//
+//   - Rendering an agent the user did not ask about makes that agent's render
+//     errors fatal to the run. A codex subagent name collision aborted
+//     `status --agents claude`, the command you reach for to diagnose it.
+//   - "A sibling would render this path" is not ownership. An agent that was
+//     added but never applied owns nothing on disk, so releasing the dropper's
+//     entry on its behalf left a file no state entry tracked. Once that agent
+//     was disabled, the file stayed forever and nothing reported it.
+//
+// This is the rule purgeAgentDests already uses to keep a shared file: another
+// agent holds a state entry for it.
+//
+// Only agents ABSENT from this run count. A sibling that is also in PerAgent
+// is ignored, because its ops already say what it renders; counting its state
+// too would let an agent that stopped rendering a path keep it alive, and a
+// full apply would then never reclaim a stale-owned file.
+func (p RenderPlan) WithSiblingOwners(s *state.Targets, userHome string, scope adapter.Scope, project string, siblings []string) RenderPlan {
+	if s == nil || len(siblings) == 0 {
+		return p
+	}
+	absent := make(map[string]bool, len(siblings))
+	for _, name := range siblings {
+		if _, inRun := p.PerAgent[name]; !inRun {
+			absent[name] = true
+		}
+	}
+	if len(absent) == 0 {
+		return p
+	}
+	scopeName := scope.String()
+	portableProject := paths.HomeRelative(userHome, project)
+	owned := map[string]struct{}{}
+	for key := range s.Files {
+		if absent[key.Agent] && key.Scope == scopeName && key.Project == portableProject {
+			owned[key.Path] = struct{}{}
+		}
+	}
+	return RenderPlan{PerAgent: p.PerAgent, siblingOwned: owned}
 }
 
 type AgentResult struct {
@@ -407,6 +458,10 @@ func applyPlan(
 	seen := map[string][]byte{}
 	seenBy := map[string]string{}
 	deletedOrphans := map[string]struct{}{}
+	// Paths an agent in this run writes, or an enabled agent left out of an
+	// --agents run owns in state. orphanDeletes is per-agent and would
+	// otherwise delete a shared dest another agent still holds (#246).
+	stillRendered := NewSharedDests(p, userHome)
 	for _, name := range reg.Names() {
 		res, ok := p.PerAgent[name]
 		if !ok {
@@ -473,7 +528,7 @@ func applyPlan(
 		// this agent owns in state but the source no longer renders. Deduped by
 		// path across agents that share a skills dir (claude + opencode →
 		// .claude/skills/), since the first agent's writer already removed it.
-		for _, del := range orphanDeletes(st, userHome, name, scope, project, res.Ops) {
+		for _, del := range stillRendered.FilterDeletes(orphanDeletes(st, userHome, name, scope, project, res.Ops)) {
 			if _, done := deletedOrphans[del.Path]; done {
 				continue
 			}

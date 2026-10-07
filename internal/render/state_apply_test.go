@@ -86,7 +86,7 @@ func TestPruneStaleState_DropsRemovedFiles(t *testing.T) {
 
 	render.PruneStaleState(s, home, "claude", adapter.ScopeUser, "", []adapter.FileOp{
 		{Action: adapter.ActionWrite, Path: "/home/me/.claude/agents/keep.md"},
-	})
+	}, render.SharedDests{})
 	if _, ok := s.Files[keep]; !ok {
 		t.Fatal("kept entry was pruned")
 	}
@@ -112,7 +112,7 @@ func TestPruneStaleState_DropsRemovedKeys(t *testing.T) {
 		Path:          clauJSON,
 		MergeStrategy: "merge-json-keys",
 		Content:       []byte(`{"mcpServers":{"keep":{"command":"x"}}}`),
-	}})
+	}}, render.SharedDests{})
 	if _, ok := s.Keys[keepKey]; !ok {
 		t.Fatal("kept key was pruned")
 	}
@@ -162,7 +162,7 @@ func TestState_PortableAcrossHomes(t *testing.T) {
 	linuxPath := filepath.Join(linuxHome, ".claude.json")
 	render.PruneStaleState(s, linuxHome, "claude", adapter.ScopeUser, "", []adapter.FileOp{
 		{Action: adapter.ActionWrite, Path: linuxPath},
-	})
+	}, render.SharedDests{})
 	if _, ok := s.Files[gotKey]; !ok {
 		t.Fatalf("portable key pruned on machine B; have %v", s.Files)
 	}
@@ -185,10 +185,168 @@ func TestPruneStaleState_AmbiguousPathPrefixKeepsLiveKey(t *testing.T) {
 		s.Keys[liveKey] = state.KeyEntry{SHA256: "deadbeef"}
 		s.Keys[state.Key{Agent: "claude", Scope: "user", Path: "a", Pointer: "/x"}] = state.KeyEntry{SHA256: "feed"}
 		// userHome "" so HomeRelative leaves the colon-bearing paths intact.
-		render.PruneStaleState(s, "", "claude", adapter.ScopeUser, "", ops)
+		render.PruneStaleState(s, "", "claude", adapter.ScopeUser, "", ops, render.SharedDests{})
 		if _, ok := s.Keys[liveKey]; !ok {
 			t.Fatalf("iteration %d: live key %+v wrongly pruned (ambiguous path prefix)", i, liveKey)
 		}
+	}
+}
+
+func TestFilterOrphanDeletes_KeepsSharedPath(t *testing.T) {
+	home := "/Users/me"
+	shared := filepath.Join(home, ".agents", "skills", "demo", "SKILL.md")
+	alone := filepath.Join(home, ".agents", "skills", "gone", "SKILL.md")
+	// shared is dropped and alone is kept. A one-element input cannot tell an
+	// in-place filter from a fresh slice: nothing is written back into the
+	// dropped slot. Two elements, with the survivor second, do.
+	dels := []adapter.FileOp{
+		{Action: adapter.ActionDelete, Path: shared},
+		{Action: adapter.ActionDelete, Path: alone},
+	}
+	keep := render.NewSharedDests(render.RenderPlan{
+		PerAgent: map[string]render.AgentResult{
+			"codex": {Ops: []adapter.FileOp{{Action: adapter.ActionWrite, Path: shared, Content: []byte("x")}}},
+		},
+	}, home)
+	got := keep.FilterDeletes(dels)
+	if len(got) != 1 || got[0].Path != alone {
+		t.Fatalf("only the unshared orphan should delete: %+v", got)
+	}
+	if len(dels) != 2 || dels[0].Path != shared || dels[1].Path != alone {
+		t.Fatalf("FilterDeletes mutated its input: %+v", dels)
+	}
+}
+
+// TestWithSiblingOwners pins the ownership rule behind the --agents keep-set.
+// Each row is one way the rule can go wrong.
+func TestWithSiblingOwners(t *testing.T) {
+	testenv.RequireContainer(t)
+	home := t.TempDir()
+	shared := filepath.Join(home, ".agents", "skills", "demo", "SKILL.md")
+	// The file is on disk in every row, as it is in the real scenario. That
+	// matters for the release assertion: with the file present, the
+	// reclaimable arm retains pi's entry unless the keep-set releases it.
+	if err := os.MkdirAll(filepath.Dir(shared), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shared, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := func(agent string) state.Key { return state.NewFileKey(home, agent, "user", "", shared) }
+	entry := state.FileEntry{SHA256: "abc", SourceID: "skills/demo/SKILL.md"}
+
+	tests := []struct {
+		name     string
+		owners   []string // agents holding a state entry for the path
+		inRun    []string // agents rendered this run (none of them write the path)
+		siblings []string // enabled agents --agents left out
+		wantKeep bool
+	}{
+		{
+			name:   "an unselected agent that owns the path keeps it",
+			owners: []string{"pi", "codex"}, inRun: []string{"pi"}, siblings: []string{"codex"},
+			wantKeep: true,
+		},
+		{
+			// "codex would render this" is not ownership. Releasing pi's entry
+			// on behalf of an agent that never applied leaves the file tracked
+			// by nobody, and once codex is disabled it is never reclaimed.
+			name:   "an unselected agent that never applied owns nothing",
+			owners: []string{"pi"}, inRun: []string{"pi"}, siblings: []string{"codex"},
+			wantKeep: false,
+		},
+		{
+			// The trap: on a full apply nobody is left out, so an agent's OWN
+			// stale entry must not count as a sibling's ownership. If it did, a
+			// path every agent stopped rendering would be kept forever.
+			name:   "a full run reads no state",
+			owners: []string{"pi", "codex"}, inRun: []string{"pi", "codex"}, siblings: nil,
+			wantKeep: false,
+		},
+		{
+			name:   "a sibling that is also in the run is judged by its ops, not its state",
+			owners: []string{"pi", "codex"}, inRun: []string{"pi", "codex"}, siblings: []string{"codex"},
+			wantKeep: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := state.New()
+			for _, a := range tc.owners {
+				st.Files[key(a)] = entry
+			}
+			run := render.RenderPlan{PerAgent: map[string]render.AgentResult{}}
+			for _, a := range tc.inRun {
+				run.PerAgent[a] = render.AgentResult{}
+			}
+			plan := run.WithSiblingOwners(st, home, adapter.ScopeUser, "", tc.siblings)
+			if got := render.NewSharedDests(plan, home).Keeps(shared); got != tc.wantKeep {
+				t.Fatalf("Keeps = %v, want %v", got, tc.wantKeep)
+			}
+
+			// The release must follow the keep decision exactly, or the file
+			// either stays reported forever or ends up with no owner.
+			render.PruneStaleState(st, home, "pi", adapter.ScopeUser, "", nil, render.NewSharedDests(plan, home))
+			_, piStillOwns := st.Files[key("pi")]
+			if tc.wantKeep && piStillOwns {
+				t.Error("pi stopped rendering a path another agent owns; its entry must be released")
+			}
+			if !tc.wantKeep && !piStillOwns {
+				t.Error("no other agent owns the path, so pi must keep its entry until the delete runs; " +
+					"releasing it here leaves a file nothing tracks")
+			}
+		})
+	}
+}
+
+// TestSharedDest_DroppingAgentReleasesStateAndStopsReportingOrphan is the
+// regression for the half of #246 the first pass missed. Keeping the file is
+// necessary but not sufficient: the agent that STOPPED rendering it also has to
+// let go of its state entry, or `status` offers a deletion apply will never
+// perform and `status --exit-code` never returns 0 after a clean apply.
+func TestSharedDest_DroppingAgentReleasesStateAndStopsReportingOrphan(t *testing.T) {
+	testenv.RequireContainer(t)
+	home := t.TempDir()
+	shared := filepath.Join(home, ".agents", "skills", "demo", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(shared), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The keeper just (re)wrote it, so it is very much on disk — which is
+	// exactly why the reclaimable-retention arm used to hold the entry.
+	if err := os.WriteFile(shared, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := state.New()
+	for _, agent := range []string{"claude", "opencode"} {
+		st.Files[state.NewFileKey(home, agent, "user", "", shared)] = state.FileEntry{
+			SHA256: "abc", SourceID: "skills/demo/SKILL.md",
+		}
+	}
+
+	// claude still renders it; opencode has stopped.
+	plan := render.RenderPlan{PerAgent: map[string]render.AgentResult{
+		"claude":   {Ops: []adapter.FileOp{{Action: adapter.ActionWrite, Path: shared, Content: []byte("x"), SourceID: "skills/demo/SKILL.md"}}},
+		"opencode": {Ops: nil},
+	}}
+	shared246 := render.NewSharedDests(plan, home)
+
+	orphans := render.OrphanFiles(st, home, "opencode", adapter.ScopeUser, "", nil, shared246)
+	if len(orphans) != 0 {
+		t.Errorf("a dest the sibling still renders must not be reported as an orphan; got %v", orphans)
+	}
+
+	render.PruneStaleState(st, home, "opencode", adapter.ScopeUser, "", nil, shared246)
+	if _, ok := st.Files[state.NewFileKey(home, "opencode", "user", "", shared)]; ok {
+		t.Error("the dropping agent must release its state entry; apply will never delete the file, so the entry would be retained forever")
+	}
+	if _, ok := st.Files[state.NewFileKey(home, "claude", "user", "", shared)]; !ok {
+		t.Error("the agent that still renders the dest must keep its entry")
+	}
+
+	// And the file itself is untouched — the original #246 guarantee.
+	if _, err := os.Stat(shared); err != nil {
+		t.Errorf("shared dest must survive: %v", err)
 	}
 }
 
@@ -245,7 +403,7 @@ func TestPruneStaleState_ReclaimableOrphanRetention(t *testing.T) {
 	}
 
 	// No ops at all: every entry is "no longer rendered".
-	render.PruneStaleState(st, tmp, "claude", adapter.ScopeUser, "", nil)
+	render.PruneStaleState(st, tmp, "claude", adapter.ScopeUser, "", nil, render.SharedDests{})
 
 	if _, ok := st.Files[state.NewFileKey(tmp, "claude", "user", "", present)]; !ok {
 		t.Error("a reclaimable destination that is still on disk must keep its entry, " +
@@ -286,7 +444,7 @@ func TestPruneStaleState_DanglingSymlinkIsKept(t *testing.T) {
 	key := state.NewFileKey(tmp, "claude", "user", "", link)
 	st.Files[key] = state.FileEntry{SHA256: "old", SourceID: "subagents/dangling.md"}
 
-	render.PruneStaleState(st, tmp, "claude", adapter.ScopeUser, "", nil)
+	render.PruneStaleState(st, tmp, "claude", adapter.ScopeUser, "", nil, render.SharedDests{})
 
 	if _, ok := st.Files[key]; !ok {
 		t.Error("a dangling symlink is still a destination agentsync owns and can remove; " +
@@ -322,7 +480,7 @@ func TestPruneStaleState_RetiredSubagentSourceIDIsReclaimable(t *testing.T) {
 	// The RETIRED spelling, as a pre-upgrade state file carries it.
 	st.Files[key] = state.FileEntry{SHA256: "old", SourceID: "agents/code-reviewer.md"}
 
-	render.PruneStaleState(st, tmp, "claude", adapter.ScopeUser, "", nil)
+	render.PruneStaleState(st, tmp, "claude", adapter.ScopeUser, "", nil, render.SharedDests{})
 	if _, ok := st.Files[key]; !ok {
 		t.Fatal("a pre-rename subagent entry must stay owned so its destination is reclaimed")
 	}
@@ -386,7 +544,7 @@ func TestPruneStaleState_SiblingColonProjectRootSurvives(t *testing.T) {
 	s.Files[longKey] = state.FileEntry{SHA256: "b"}
 
 	// Apply the SHORT project with no ops at all: everything it owns is stale.
-	render.PruneStaleState(s, userHome, "claude", adapter.ScopeProject, shortRoot, nil)
+	render.PruneStaleState(s, userHome, "claude", adapter.ScopeProject, shortRoot, nil, render.SharedDests{})
 
 	if _, ok := s.Files[shortKey]; ok {
 		t.Fatal("the short project's own stale entry should have been pruned")

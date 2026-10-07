@@ -180,6 +180,10 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Agents --agents left out are not rendered (their errors must not
+			// fail a diagnostic run), but a path one of them owns in state is
+			// not an orphan for the selected agent either (#246).
+			plan = plan.WithSiblingOwners(s, userHome, sc, projectRoot, agentsLeftOut(enabledAgents, selected))
 
 			model := buildStatusModel(plan, reg.Names(), s, userHome, sc, projectRoot)
 			if jsonOut {
