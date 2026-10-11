@@ -212,10 +212,31 @@ that creates `hooks.json` copies that object in as the merge base, then overlays
 only the events agentsync is rendering, so a `commandRegex` group or any other
 unmodeled sibling keeps running after Droid stops reading `settings.json`. Those
 copied events are not recorded as owned, so a later apply does not orphan-delete
-them. The legacy `.factory/hooks/hooks.json` path still loads beside `hooks.json`
+them. An event agentsync **does** render replaces the copied array for that
+event, so a `settings.json` handler under the same event stops running; apply
+warns, naming the event, unless the copied handlers are the same ones canonical
+renders (the usual `import` then `apply` case). `settings.json` is never edited.
+The legacy `.factory/hooks/hooks.json` path still loads beside `hooks.json`
 until Droid's next save archives it to `hooks/hooks.migrated.json`; apply warns
 and does not move it. Import retirement disowns Factory's `/<event>` state
 pointer, not only the `/hooks/<event>` spelling the nested adapters use.
+
+**Factory matchers are written verbatim, and Droid's tool names are its own.**
+A canonical `matcher` reaches `hooks.json` unchanged. Droid's matchers are
+case-sensitive, accept regexes, and name Droid's tools: `Execute`, `Read`,
+`Edit`, `Create`, `ApplyPatch`, `LS`, `Glob`, `Grep`, `Task`, `FetchUrl`,
+`WebSearch`, and `mcp__<server>__<tool>`
+([hooks reference](https://docs.factory.ai/reference/hooks-reference)). A
+matcher written for Claude Code's names (`Bash`, `Write`, …) is valid JSON but
+matches nothing in Droid. agentsync does not translate tool names for any
+agent, so a hook meant for Droid needs a Droid matcher, `*`, or no matcher.
+
+**Upgrading moves two Factory paths.** Skills now render to `.agents/skills/`
+instead of `.factory/skills/`; the next apply removes the copies agentsync wrote
+under `.factory/skills/` (backing up any you edited first) and leaves skills
+you created there yourself alone. User memory now renders to
+`~/.factory/AGENTS.md`; an existing hand-written file there is backed up, then
+replaced by the managed file, like any other first apply over a foreign file.
 
 **Deliberate exclusions:** **Aider** (no native MCP; memory only via an
 `.aider.conf.yml` `read:` pointer — needs a content+config-pointer adapter, out of

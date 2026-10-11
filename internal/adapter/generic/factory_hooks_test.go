@@ -10,8 +10,10 @@ import (
 
 	"github.com/spxrogers/agentsync/internal/adapter"
 	"github.com/spxrogers/agentsync/internal/adapter/generic"
+	"github.com/spxrogers/agentsync/internal/render"
 	"github.com/spxrogers/agentsync/internal/secrets"
 	"github.com/spxrogers/agentsync/internal/source"
+	"github.com/spxrogers/agentsync/internal/state"
 	"github.com/spxrogers/agentsync/internal/testenv"
 	"github.com/spxrogers/agentsync/internal/untrusted"
 )
@@ -91,22 +93,45 @@ func TestApply_FactoryHooks_SeedsSettingsWhenHooksJSONAbsent(t *testing.T) {
 	if hooksOp == nil {
 		t.Fatal("no hooks.json op")
 	}
-	if strings.Contains(string(hooksOp.Content), "commandRegex") || strings.Contains(string(hooksOp.Content), "echo audit") {
-		t.Fatalf("settings hooks leaked into op.Content and would be recorded as owned:\n%s", hooksOp.Content)
-	}
+	hooksPath := filepath.Join(dir, "hooks.json")
 	for i := 0; i < 2; i++ {
 		if err := a.Apply(ops, adapter.PassThroughWriter{}); err != nil {
 			t.Fatal(err)
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, "hooks.json"))
-		if err != nil {
-			t.Fatal(err)
+		doc := readHooksJSON(t, hooksPath)
+		if got := eventCommands(t, doc, "PreToolUse"); len(got) != 1 || got[0] != "echo audit" {
+			t.Fatalf("apply %d: seeded PreToolUse = %v, want [echo audit]", i+1, got)
 		}
-		text := string(raw)
-		for _, want := range []string{"commandRegex", "echo audit", "echo stop", "echo session"} {
-			if !strings.Contains(text, want) {
-				t.Fatalf("apply %d dropped %q from hooks.json:\n%s", i+1, want, text)
-			}
+		if got := firstDef(t, doc, "PreToolUse")["commandRegex"]; got != "^git " {
+			t.Fatalf("apply %d: seeded commandRegex = %#v; the field agentsync cannot model must survive verbatim", i+1, got)
+		}
+		if got := eventCommands(t, doc, "Stop"); len(got) != 1 || got[0] != "echo stop" {
+			t.Fatalf("apply %d: seeded Stop = %v, want [echo stop]", i+1, got)
+		}
+		if got := eventCommands(t, doc, "SessionStart"); len(got) != 1 || got[0] != "echo session" {
+			t.Fatalf("apply %d: rendered SessionStart = %v, want [echo session]", i+1, got)
+		}
+	}
+
+	// The seed is the merge BASE, so only the rendered event may be recorded as
+	// owned. A seeded pointer recorded as owned would be orphan-deleted by the
+	// first apply that stops rendering it, destroying a hook the user wrote.
+	st := state.New()
+	if err := render.RecordOpsState(st, tmp, "factory", adapter.ScopeUser, "", ops); err != nil {
+		t.Fatal(err)
+	}
+	var owned []string
+	for key := range st.Keys {
+		if strings.HasSuffix(key.Path, "hooks.json") {
+			owned = append(owned, key.Pointer)
+		}
+	}
+	if len(owned) == 0 {
+		t.Fatal("no hooks.json pointer recorded; the ownership assertion below would be vacuous")
+	}
+	for _, ptr := range owned {
+		if ptr != "/SessionStart" {
+			t.Fatalf("seeded pointer %q recorded as owned (all owned: %v); only /SessionStart is rendered", ptr, owned)
 		}
 	}
 }
